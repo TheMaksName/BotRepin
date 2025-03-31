@@ -39,7 +39,13 @@ jobs:
             docker stop telegram-bot || true
             docker rm telegram-bot || true
             docker run -d --name telegram-bot \
-              -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
-              -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
-              -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
+            -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
+            -e ADMIN_USER_NICK=${{ secrets.ADMIN_USER_NICK }} \
+            -e DB_LITE=${{ secrets.DB_LITE }} \
+            -e SMTP_SERVER=${{ secrets.SMTP_SERVER }} \
+            -e PORT=${{ secrets.PORT }} \
+            -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
+            -e SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }} \
               themaksname/telegram-bot:latest
