@@ -49,5 +49,4 @@ jobs:
             -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
             -e SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }} \
             -e PROD=${{ secrets.PROD }} \
-            -v /app/bot_data:/app \
             themaksname/telegram-bot:latest
