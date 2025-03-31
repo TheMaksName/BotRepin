@@ -35,11 +35,11 @@ jobs:
           username: ${{ secrets.REG_RU_USERNAME }}
           password: ${{ secrets.REG_RU_PASSWORD }}  # Или key: ${{ secrets.REG_RU_SSH_KEY }}
           script: |
-            docker pull yourdockerusername/telegram-bot:latest
+            docker pull themaksname/telegram-bot:latest
             docker stop telegram-bot || true
             docker rm telegram-bot || true
             docker run -d --name telegram-bot \
               -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
               -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
               -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
-              yourdockerusername/telegram-bot:latest
+              themaksname/telegram-bot:latest
