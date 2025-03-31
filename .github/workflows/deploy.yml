@@ -48,4 +48,6 @@ jobs:
             -e PORT=${{ secrets.PORT }} \
             -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
             -e SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }} \
-              themaksname/telegram-bot:latest
+            -e PROD=${{ secrets.PROD }} \
+            -v /app/bot_data:/app \
+            themaksname/telegram-bot:latest
