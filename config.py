@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     """Класс для хранения настроек приложения с валидацией."""
-    prod: bool = False  # Имя в нижнем регистре, мапится на PROD
+    prod: bool  # Имя в нижнем регистре, мапится на PROD
     bot_token: str  # Мапится на BOT_TOKEN
     admin_user_nick: str  # Мапится на admin_user_nick
     db_lite: str  # Мапится на db_lite

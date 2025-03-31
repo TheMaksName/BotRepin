@@ -135,13 +135,14 @@ async def main():
                 if not user_name:
                     await state.set_state(User_MainStates.before_registration)
                     await message.answer(
-                        "Здесь должен быть приветственный текст. Появится позже...",
+                        "Привет.👋"
+                        "Для участия в конкурсе нужно зарегистрироваться. Как будешь готов, напиши 'Зарегистрироваться' или нажми на кнопку ниже👇",
                         reply_markup=reply.start_kb_prod
                     )
                 else:
                     await state.set_state(User_MainStates.after_registration)
                     await message.answer(
-                        f"Привет {user_name.split(' ')[1]}, давно не виделись",
+                        f"Привет {user_name.split(' ')[1]}, давно не виделись👋",
                         reply_markup=reply.menu_kb
                     )
                     await message.answer("Выбери действие в меню.")
