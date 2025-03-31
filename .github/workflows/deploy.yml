@@ -1,0 +1,45 @@
+name: Deploy Telegram Bot
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: TheMaskName/telegram-bot:latest
+
+      - name: Deploy to REG.RU VPS
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.REG_RU_HOST }}
+          username: ${{ secrets.REG_RU_USERNAME }}
+          password: ${{ secrets.REG_RU_PASSWORD }}  # Или key: ${{ secrets.REG_RU_SSH_KEY }}
+          script: |
+            docker pull yourdockerusername/telegram-bot:latest
+            docker stop telegram-bot || true
+            docker rm telegram-bot || true
+            docker run -d --name telegram-bot \
+              -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
+              -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+              -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
+              yourdockerusername/telegram-bot:latest
