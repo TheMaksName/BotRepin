@@ -43,7 +43,7 @@ jobs:
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
             -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
             -e ADMIN_USER_NICK=${{ secrets.ADMIN_USER_NICK }} \
-            -e DB_LITE=${{ secrets.DB_LITE }} \
+            -e DATABASE_URL=${{ secrets.DB_LITE }} \
             -e SMTP_SERVER=${{ secrets.SMTP_SERVER }} \
             -e PORT=${{ secrets.PORT }} \
             -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
