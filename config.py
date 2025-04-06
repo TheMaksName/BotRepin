@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     prod: bool  # Имя в нижнем регистре, мапится на PROD
     bot_token: str  # Мапится на BOT_TOKEN
     admin_user_nick: str  # Мапится на admin_user_nick
-    db_lite: str  # Мапится на db_lite
+    database_url: str  # Мапится на db_lite
     smtp_server: str  # Мапится на SMTP_SERVER
     port: int  # Мапится на PORT
     sender_email: str  # Мапится на sender_email
