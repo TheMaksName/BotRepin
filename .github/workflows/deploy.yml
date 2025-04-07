@@ -35,6 +35,21 @@ jobs:
           username: ${{ secrets.REG_RU_USERNAME }}
           password: ${{ secrets.REG_RU_PASSWORD }}  # Или key: ${{ secrets.REG_RU_SSH_KEY }}
           script: |
+            # Создаем сеть, если ее нет
+            docker network create bot-network || true
+            
+            #Запускаем PostgreSQL
+            docker stop postgres || true
+            docker rm postgres || true
+            docker run -d \
+              --network bot-network \
+              -e POSTGRES_USER=botuser \
+              -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
+              -e POSTGRES_DB=botdb \
+              -v postgres_data:/var/lib/postgresql/data \
+              postgres:16
+              
+            # Запускаем бот
             docker pull themaksname/telegram-bot:latest
             docker stop telegram-bot || true
             docker rm telegram-bot || true
