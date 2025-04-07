@@ -42,6 +42,7 @@ jobs:
             docker stop postgres || true
             docker rm postgres || true
             docker run -d \
+              --name postgres \
               --network bot-network \
               -e POSTGRES_USER=botuser \
               -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
