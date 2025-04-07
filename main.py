@@ -125,7 +125,7 @@ async def main():
                 if not await orm_Check_avail_user(session, user_id):
                     info_user = {
                         "user_id": user_id,
-                        "nickname": message.from_user.username or "не установлен"
+                        "nickname": message.from_user.username or "не установлен1"
                     }
                     await orm_AddUser(session, info_user)
                     USER_IDS_CACHE.append(user_id)  # Обновляем кэш
