@@ -55,6 +55,7 @@ jobs:
             docker stop telegram-bot || true
             docker rm telegram-bot || true
             docker run -d --name telegram-bot \
+            --network bot-network \
             -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
             -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
