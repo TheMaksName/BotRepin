@@ -48,7 +48,7 @@ jobs:
               -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
               -e POSTGRES_DB=botdb \
               -v postgres_data:/var/lib/postgresql/data \
-              postgres:16
+              postgres:17
               
             # Запускаем бот
             docker pull themaksname/telegram-bot:latest
