@@ -47,6 +47,7 @@ jobs:
               -e POSTGRES_USER=botuser \
               -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
               -e POSTGRES_DB=botdb \
+              -p 5432:5432 \
               -v postgres_data:/var/lib/postgresql/data \
               postgres:17
               
