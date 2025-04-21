@@ -143,14 +143,20 @@ async def get_participant_by_id(session: AsyncSession, participant_id: int) -> O
         logger.error(f"Get participant by id error: {e}")
         return None
 
-async def get_participant_theme_and_work(session: AsyncSession, participant_id: int) -> Optional[Dict[str, str]]:
-    """Асинхронно получает тему и ссылку на работу участника"""
+async def get_participant_theme_and_work(session: AsyncSession, chat_id: int) -> Optional[Dict[str, str]]:
+    """Асинхронно получает тему и ссылку на работу участника по chat_id"""
     try:
-        participant = await get_participant_by_id(session, participant_id)
-        if participant:
+        result = await session.execute(
+            select(Participant.theme, Participant.work_link)
+            .join(UserCode, UserCode.participant_id == Participant.id)
+            .where(UserCode.telegram_chat_id == chat_id)
+        )
+        row = result.first()
+        
+        if row:
             return {
-                "theme": participant.theme,
-                "work_link": participant.work_link
+                "theme": row.theme,
+                "work_link": row.work_link
             }
         return None
     except SQLAlchemyError as e:
