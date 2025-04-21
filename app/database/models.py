@@ -24,7 +24,7 @@ class Participant(Base):
 
 class UserCode(Base):
     """Модель кода верификации Telegram"""
-    __tablename__ = 'usercode'
+    __tablename__ = 'reg_usercode'
     __table_args__ = (
         Index('idx_usercode_code', 'code'),
         Index('idx_usercode_telegram', 'telegram_username'),
