@@ -1,70 +1,70 @@
-name: Deploy Telegram Bot
-
-on:
-  push:
-    branches:
-      - main
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: themaksname/telegram-bot:latest
-
-      - name: Deploy to REG.RU VPS
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.REG_RU_HOST }}
-          username: ${{ secrets.REG_RU_USERNAME }}
-          password: ${{ secrets.REG_RU_PASSWORD }}  # Или key: ${{ secrets.REG_RU_SSH_KEY }}
-          script: |
-            # Создаем сеть, если ее нет
-            docker network create bot-network || true
-            
-            #Запускаем PostgreSQL
-            docker stop postgres || true
-            docker rm postgres || true
-            docker run -d \
-              --name postgres \
-              --network bot-network \
-              -e POSTGRES_USER=botuser \
-              -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
-              -e POSTGRES_DB=botdb \
-              -p 5432:5432 \
-              -v postgres_data:/var/lib/postgresql/data \
-              postgres:17
-              
-            # Запускаем бот
-            docker pull themaksname/telegram-bot:latest
-            docker stop telegram-bot || true
-            docker rm telegram-bot || true
-            docker run -d --name telegram-bot \
-            --network bot-network \
-            -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
-            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
-            -e ADMIN_USER_NICK=${{ secrets.ADMIN_USER_NICK }} \
-            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            -e SMTP_SERVER=${{ secrets.SMTP_SERVER }} \
-            -e PORT=${{ secrets.PORT }} \
-            -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
-            -e SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }} \
-            -e PROD=${{ secrets.PROD }} \
-            themaksname/telegram-bot:latest
+#name: Deploy Telegram Bot
+#
+#on:
+#  push:
+#    branches:
+#      - main
+#
+#jobs:
+#  deploy:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout code
+#        uses: actions/checkout@v3
+#
+#      - name: Set up Docker Buildx
+#        uses: docker/setup-buildx-action@v2
+#
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@v2
+#        with:
+#          username: ${{ secrets.DOCKER_USERNAME }}
+#          password: ${{ secrets.DOCKER_PASSWORD }}
+#
+#      - name: Build and push Docker image
+#        uses: docker/build-push-action@v4
+#        with:
+#          context: .
+#          push: true
+#          tags: themaksname/telegram-bot:latest
+#
+#      - name: Deploy to REG.RU VPS
+#        uses: appleboy/ssh-action@v1.0.0
+#        with:
+#          host: ${{ secrets.REG_RU_HOST }}
+#          username: ${{ secrets.REG_RU_USERNAME }}
+#          password: ${{ secrets.REG_RU_PASSWORD }}  # Или key: ${{ secrets.REG_RU_SSH_KEY }}
+#          script: |
+#            # Создаем сеть, если ее нет
+#            docker network create bot-network || true
+#
+#            #Запускаем PostgreSQL
+#            docker stop postgres || true
+#            docker rm postgres || true
+#            docker run -d \
+#              --name postgres \
+#              --network bot-network \
+#              -e POSTGRES_USER=botuser \
+#              -e POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
+#              -e POSTGRES_DB=botdb \
+#              -p 5432:5432 \
+#              -v postgres_data:/var/lib/postgresql/data \
+#              postgres:17
+#
+#            # Запускаем бот
+#            docker pull themaksname/telegram-bot:latest
+#            docker stop telegram-bot || true
+#            docker rm telegram-bot || true
+#            docker run -d --name telegram-bot \
+#            --network bot-network \
+#            -e BOT_TOKEN=${{ secrets.BOT_TOKEN }} \
+#            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+#            -e NEWS_CHANNEL_URL=https://t.me/RepinNews \
+#            -e ADMIN_USER_NICK=${{ secrets.ADMIN_USER_NICK }} \
+#            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
+#            -e SMTP_SERVER=${{ secrets.SMTP_SERVER }} \
+#            -e PORT=${{ secrets.PORT }} \
+#            -e SENDER_EMAIL=${{ secrets.SENDER_EMAIL }} \
+#            -e SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }} \
+#            -e PROD=${{ secrets.PROD }} \
+#            themaksname/telegram-bot:latest

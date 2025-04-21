@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from time import time
-from typing import Dict, Union, Callable, Awaitable
+from typing import Dict, Union, Callable, Awaitable, List
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -10,12 +10,13 @@ from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.FSM.FSM_user_private import RegistrationUser, User_MainStates
-from app.bot.handlers.user_edit_profile import user_view_profile_router
+
 from app.bot.handlers.user_registartion import user_registration_router
+from app.database.models import Material
+from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
+    get_participant_theme_and_work
 from app.kbds.inline import get_callback_btns, create_material_buttons
 from app.kbds.reply import get_keyboard
-from app.database.orm_query import orm_Get_info_user, orm_get_news_by_id, orm_get_all_news, \
-    orm_get_all_themes_by_category_id, orm_get_theme_by_id, orm_Edit_user_profile, orm_get_material_by_id
 from app.kbds import reply
 from config import settings
 
@@ -23,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 # Создаем роутер для приватных команд пользователя
 user_private_router = Router()
-user_private_router.include_router(user_registration_router)
-user_private_router.include_router(user_view_profile_router)
+
+# user_private_router.include_router(user_view_profile_router)
 
 # Кэш для хранения текущей новости и темы для каждого пользователя
 # Кэш с тайм-аутом
@@ -68,15 +69,10 @@ async def paginate_items(
         await (message.answer if isinstance(message, Message) else message.message.edit_text)("Ошибка загрузки.")
 
 
-# Команда /menu для открытия меню
-# @user_private_router.message(Command('menu'))
-# async def menu(message: Message) -> None:
-#     """Открывает основное меню пользователя."""
-#     logger.info(f"Пользователь {message.from_user.id} открыл меню")
-#     await message.answer("Открываю меню...", reply_markup=reply.menu_kb)
+
 
 # Обработчик для команды "новости"
-@user_private_router.message(F.text.lower() == 'новости')
+@user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'новости')
 async def news(message: Message, session: AsyncSession) -> None:
     """Отправляет сообщение с ссылкой на Telegram-канал новостей."""
     builder = InlineKeyboardBuilder()
@@ -86,134 +82,102 @@ async def news(message: Message, session: AsyncSession) -> None:
         reply_markup=builder.as_markup()
     )
 
-    # """Показывает первую новость пользователю."""
-    # user_id = message.from_user.id
-    #
-    # await paginate_items(
-    #     message, session, user_id, 1,cache_current_news, orm_get_news_by_id,
-    #     lambda n: f"<strong>{n.text}</strong>" if n else "Новостей пока нет(((",
-    #     lambda n, _: get_callback_btns(btns={"Далее": "news_next"}) if n else None
-    # )
 
-
-
-
-# Обработчик для переключения между новостями
-@user_private_router.callback_query(F.data.startswith('news_'))
-async def slide_news(callback: CallbackQuery, session: AsyncSession) -> None:
-    """Переключает новости вперед или назад."""
-    user_id = callback.from_user.id
-    action = callback.data.split("_")[1]  # Определяем действие (next или back)
-    current_news_id = cache_current_news.get(user_id, 1)
-    new_id = current_news_id + 1 if action == 'next' else max(1, current_news_id - 1)
-
-    async def kb_func(news, _):
-        next_exists = await orm_get_news_by_id(session, new_id + 1)
-        return get_callback_btns(btns={"Назад": "news_back", "Далее": "news_next" if next_exists else None})
-
-    await paginate_items(
-        callback, session, user_id, new_id, cache_current_news,
-        orm_get_news_by_id,
-        lambda n: f"<strong>{n.text}</strong>",
-        kb_func
-    )
-    await callback.answer()
-
-
-
-# Обработчик для команды "материалы"
-@user_private_router.message(F.text.lower() == 'материалы')
+@user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'материалы')
 async def get_material(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Показывает список материалов с ссылками."""
+    """Показывает первую пачку материалов"""
     user_id = message.from_user.id
-    await paginate_items(
-        message, session, user_id, 0, cache_current_material,
-        orm_get_material_by_id,
-        lambda ms: "\n".join(f"{m.id}🟦 {m.title}" for m in ms) if ms else "Материалы отсутствуют",
-        lambda ms, _: create_material_buttons(ms) if ms else None
-    )
+    batch_num = 1  # Начинаем с первой пачки
+    cache_current_material[user_id] = batch_num  # Сохраняем текущую пачку
 
+    try:
+        materials = await get_materials_batch(session, batch_num)
 
+        if not materials:
+            await message.answer("Материалы отсутствуют")
+            return
+
+        text = "\n".join(f"{m.id}🟦 {m.title}" for m in materials)
+        keyboard = await create_material_buttons(session, materials, batch_num)
+
+        await message.answer(text, reply_markup=keyboard)
+
+    except Exception as e:
+        logger.error(f"Error getting materials: {e}")
+        await message.answer("Произошла ошибка при загрузке материалов")
 
 
 @user_private_router.callback_query(F.data.startswith('slide_material_'))
 async def slide_material(callback: CallbackQuery, session: AsyncSession) -> None:
-    """Переключает материалы вперед или назад."""
+    """Переключает между пачками материалов"""
     user_id = callback.from_user.id
     action = callback.data.split("_")[2]
-    current_id = cache_current_material.get(user_id, 0)
-    new_id = current_id + 1 if action == 'next' else max(0, current_id - 1)
+    current_batch = cache_current_material.get(user_id, 1)
 
-    async def kb_func(mats, _):
-        next_exists_task = asyncio.create_task(orm_get_material_by_id(session, new_id + 1))
-        prev_exists = new_id > 0
-        next_exists = await next_exists_task
-        builder = InlineKeyboardBuilder()
-        for material in mats:
-            if material.link:
-                builder.button(text=f"Материал №{material.id}", url=material.link)
-            else:
-                builder.button(text=f"Материал №{material.id} (нет ссылки)", callback_data=f"no_link_{material.id}")
-        if prev_exists:
-            builder.button(text="Назад", callback_data="slide_material_back")
-        if next_exists:
-            builder.button(text="Далее", callback_data="slide_material_next")
-        builder.adjust(3, 3, 2)
-        return builder.as_markup()
+    # Определяем новую пачку
+    if action == 'next':
+        new_batch = current_batch + 1
+    else:  # 'back'
+        new_batch = max(1, current_batch - 1)
 
-    await paginate_items(
-        callback, session, user_id, new_id, cache_current_material,
-        orm_get_material_by_id,
-        lambda ms: "\n".join(f"{m.id}🟦 {m.title}" for m in ms),
-        kb_func
-    )
+    try:
+        materials = await get_materials_batch(session, new_batch)
 
+        if not materials:
+            await callback.answer("Дальше материалов нет" if action == 'next' else "Это первая пачка")
+            return
 
-    # user_id = callback.from_user.id
-    # action = callback.data.split('_')[2]  # Определяем действие (next или back)
-    # current_category_id = cache_current_material.get(user_id, 1)
-    #
-    # if action == 'next':
-    #     current_category_id += 1
-    # elif action == 'back':
-    #     current_category_id = max(0, current_category_id - 1)  # Не опускаемся ниже первой категории
-    #
-    # cache_current_theme[user_id] = current_category_id
-    # materials = await orm_get_material_by_id(session=session, material_id=current_category_id)
-    #
-    # if materials:
-    #     # Проверяем, есть ли следующая категория
-    #     next_materials_exists = await orm_get_material_by_id(session=session, material_id=current_category_id + 1)
-    #     # Проверяем, есть ли предыдущая категория
-    #     prev_materials_exists = await orm_get_material_by_id(session=session, material_id=current_category_id - 1)
-    #
-    #     # Создаем кнопки для тем
-    #
-    #     btns = {f'Материал №{material.id}': f'choice_material_{material.id}' for material in materials}
-    #
-    #
-    #     # Добавляем кнопку "Назад", если это не первая категория
-    #     if prev_materials_exists:
-    #         btns.update({"Назад": "slide_material_back"})
-    #
-    #     # Добавляем кнопку "Далее", если это не последняя категория
-    #     if next_materials_exists:
-    #         btns.update({"Далее": "slide_material_next"})
-    #
-    #     # Создаем клавиатуру
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     # Формируем текст с информацией о темах
-    #     result_answer = ""
-    #     for material in materials:
-    #         result_answer += f'{material.id}🟦 {material.title}\n'
-    #
-    #     await callback.message.edit_text(f"Вывожу список материалов.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await callback.answer("Материалы пока отсутствуют")
+        cache_current_material[user_id] = new_batch
+
+        text = "\n".join(f"{m.id}🟦 {m.title}" for m in materials)
+        keyboard = await create_material_buttons(session, materials, new_batch)
+
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Error sliding materials: {e}")
+        await callback.answer("Произошла ошибка при загрузке")
 
 
+async def create_material_buttons(
+        session: AsyncSession,
+        materials: List[Material],
+        current_batch: int
+) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для пачки материалов"""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+    builder = InlineKeyboardBuilder()
+
+    # Кнопки для материалов
+    for material in materials:
+        if material.link:
+            builder.button(text=f"Материал №{material.id}", url=material.link)
+        else:
+            builder.button(
+                text=f"Материал №{material.id} (нет ссылки)",
+                callback_data=f"no_link_{material.id}"
+            )
+
+    # Проверяем наличие следующей пачки
+    next_batch_exists = len(await get_materials_batch(session, current_batch + 1)) > 0
+    prev_batch_exists = current_batch > 1
+
+    # Кнопки навигации
+    if prev_batch_exists:
+        builder.button(text="◀ Назад", callback_data="slide_material_back")
+
+    builder.button(text=f"Страница {current_batch}", callback_data="current_page")
+
+    if next_batch_exists:
+        builder.button(text="▶ Далее", callback_data="slide_material_next")
+
+    builder.adjust(1, repeat=True)  # По одной кнопке в ряд для материалов
+    if prev_batch_exists or next_batch_exists:
+        builder.adjust(2 if (prev_batch_exists != next_batch_exists) else 3)  # Выравниваем кнопки навигации
+
+    return builder.as_markup()
 
 
 # Обработчик для команды "выбрать тему"
@@ -233,26 +197,6 @@ async def get_theme(message: Message, session: AsyncSession, state: FSMContext) 
         )
     )
 
-    # user_id = message.from_user.id
-    # cache_current_theme[user_id] = 1  # Устанавливаем начальную тему
-    # themes = await orm_get_all_themes_by_category_id(session=session, category_id=1)
-    #
-    # if themes:
-    #     if settings.prod:
-    #         btns = {f'Тема №{theme.id}': f'choice_theme_{theme.id}' for theme in themes}
-    #     else:
-    #         btns = {}
-    #     btns.update({"Далее": "slide_theme_next"})
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     result_answer = f"Категория: {themes[0].category.title}\n\n"
-    #     for theme in themes:
-    #         result_answer += (f'{theme.id}🟦 {theme.title}\n'
-    #                          f'📌Прием: {theme.technique}\n\n')
-    #
-    #     await message.answer(f"Вывожу список тем.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await message.answer("Темы пока отсутствуют")
 
 # Обработчик для переключения между темами
 @user_private_router.callback_query(F.data.startswith('slide_theme_'))
@@ -278,53 +222,8 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession) -> None:
         orm_get_all_themes_by_category_id,
         lambda ts: f"Категория: {ts[0].category.title}\n\n" + "\n".join(
             f"{t.id}🟦 {t.title}\n📌Прием: {t.technique}" for t in ts),
-        kb_func
-    )
-    # user_id = callback.from_user.id
-    # action = callback.data.split('_')[2]  # Определяем действие (next или back)
-    # current_category_id = cache_current_theme.get(user_id, 1)
-    #
-    # if action == 'next':
-    #     current_category_id += 1
-    # elif action == 'back':
-    #     current_category_id = max(1, current_category_id - 1)  # Не опускаемся ниже первой категории
-    #
-    # cache_current_theme[user_id] = current_category_id
-    # themes = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id)
-    #
-    # if themes:
-    #     # Проверяем, есть ли следующая категория
-    #     next_category_exists = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id + 1)
-    #     # Проверяем, есть ли предыдущая категория
-    #     prev_category_exists = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id - 1)
-    #
-    #     # Создаем кнопки для тем
-    #     if settings.prod:
-    #         btns = {f'Тема №{theme.id}': f'choice_theme_{theme.id}' for theme in themes}
-    #     else:
-    #         btns = {}
-    #
-    #     # Добавляем кнопку "Назад", если это не первая категория
-    #     if prev_category_exists:
-    #         btns.update({"Назад": "slide_theme_back"})
-    #
-    #     # Добавляем кнопку "Далее", если это не последняя категория
-    #     if next_category_exists:
-    #         btns.update({"Далее": "slide_theme_next"})
-    #
-    #     # Создаем клавиатуру
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     # Формируем текст с информацией о темах
-    #     result_answer = f"Категория: {themes[0].category.title}\n\n"
-    #     for theme in themes:
-    #         result_answer += (f'{theme.id}🟦 {theme.title}'
-    #                          f'📌Прием: {theme.technique}\n\n')
-    #
-    #     # Редактируем сообщение с новыми данными
-    #     await callback.message.edit_text(f"Вывожу список тем.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await callback.answer("Темы в этой категории отсутствуют")
+        kb_func)
+
 
 @user_private_router.callback_query(F.data.startswith('choice_theme_'))
 async def choice_theme(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
@@ -338,22 +237,7 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession, state: FS
             btns={"Подверждаю✅": f"confirm_theme_{theme_id}", "Я передумал❌": "confirm_theme_"})
     )
 
-    # theme_id = int(callback.data.split('_')[2])
-    # current_theme = await orm_get_theme_by_id(session=session, theme_id=theme_id)
-    #
-    # await state.update_data(prev_message_id=callback.message.message_id)
-    #
-    # reply_markup = get_callback_btns(
-    #     btns={
-    #         "Подверждаю✅": f"confirm_theme_{theme_id}",
-    #         "Я передумал❌": "confirm_theme_"
-    #     }
-    # )
-    #
-    # await callback.message.answer(text=f"Вы выбираете тему:\n\n"
-    #                                    f"🟦 {current_theme.title}\n"
-    #                                    f"📌Прием: {current_theme.technique}\n\n"
-    #                                    f"Подтверждаете выбор?",reply_markup=reply_markup)
+
 
 @user_private_router.callback_query(F.data.startswith("confirm_theme_"))
 async def confirm_theme(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
@@ -396,17 +280,20 @@ async def confirm_theme(callback: CallbackQuery, session: AsyncSession, state: F
 @user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'мой профиль')
 async def get_user_profile(message: Message, session: AsyncSession, state: FSMContext) -> None:
     """Показывает профиль пользователя."""
-    data = await orm_Get_info_user(session, message.from_user.id)
-    if data:
-        await state.set_state(User_MainStates.user_view_profile)
-        text = (f"📄ФИО: {data.name}\n🏫Школа: {data.school}\n📱Номер телефона: {data.phone_number}\n"
-                f"📧Электронная почта: {data.mail}\n👨‍🏫ФИО наставника: {data.name_mentor}\n"
-                f"👪Должность наставника: {data.post_mentor or ''}\n📜Тема: {data.theme}")
-        await message.answer("Открываю Ваш профиль")
-        await message.answer(text, reply_markup=get_keyboard("Редактировать", "Назад", placeholder="Выберите действие",
-                                                             sizes=(2,)))
-    else:
-        await message.answer("Профиль не найден")
+
+    participant = await get_participant_theme_and_work(session, message.chat.id)
+
+    if not participant:
+        await message.answer("❌ Информация об участнике не найдена.")
+        return
+
+    # Формируем ответ
+    response = (
+        f"📌 Ваша тема: {participant.theme}\n"
+        f"🔗 Ссылка на работу: {participant.work_link or 'не указана'}"
+    )
+
+    await message.answer(response)
 
     # await state.set_state(User_MainStates.user_view_profile)
     # data = await orm_Get_info_user(session, message.from_user.id)

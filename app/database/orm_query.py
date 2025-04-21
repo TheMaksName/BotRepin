@@ -1,216 +1,110 @@
 import logging
-from typing import Dict, Optional, List
-from sqlalchemy import select, update, delete
+from datetime import datetime
+from typing import Dict, Optional, List, Tuple
+from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.database.models import ActiveUser, User, Material, Theme, News, Admin
+from app.database.models import News, Theme, Material, CategoryTheme, UserCode, Participant
 
 logger = logging.getLogger(__name__)
 
-async def orm_AddActiveUser(session: AsyncSession, data: Dict) -> Optional[ActiveUser]:
-    """Добавляет нового активного пользователя и обновляет reg_status."""
-    try:
-        user = await session.get(User, data["user_id"])
-        if not user:
-            raise ValueError(f"Пользователь user_id={data['user_id']} не найден в таблице User")
 
-        user_data = {
-            "user_id": data["user_id"],
-            "name": data["name_user"],
-            "school": data["school"],
-            "phone_number": data["phone_number"],
-            "mail": data["mail"],
-            "name_mentor": data["name_mentor"],
-            "post_mentor": data.get("post_mentor", "")
-        }
-        active_user = ActiveUser(**user_data)
-        session.add(active_user)
-        user.reg_status = True
-        await session.commit()
-        logger.info(f"Пользователь user_id={data['user_id']} добавлен в active_user")
-        return active_user
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при добавлении active_user user_id={data.get('user_id')}: {e}")
-        return None
-    except Exception as e:
-        await session.rollback()
-        logger.error(f"Ошибка добавления active_user user_id={data.get('user_id')}: {e}")
-        return None
-
-async def orm_AddUser(session: AsyncSession, data: Dict) -> Optional[User]:
-    """Добавляет пользователя в базу данных."""
+async def check_user_code(session: AsyncSession, code: str) -> Tuple[bool, Optional[int]]:
+    """
+    Проверяет наличие кода участника в базе.
+    Возвращает (exists, participant_id), где:
+    - exists: True если код существует
+    - participant_id: ID участника или None
+    """
     try:
-        obj = User(
-            user_id=data["user_id"],
-            nickname=data["nickname"],
-            reg_status=False
+        result = await session.execute(
+            select(UserCode)
+            .where(UserCode.code == code)
         )
-        session.add(obj)
-        await session.commit()
-        logger.debug(f"Пользователь user_id={data['user_id']} добавлен в user")
-        return obj
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при добавлении user_id={data.get('user_id')}: {e}")
-        return None
+        print(result.scalars())
+        user_code = result.scalar_one_or_none()
 
-async def orm_get_all_user(session: AsyncSession) -> List[int]:
-    """Возвращает список всех user_id из таблицы User."""
-    try:
-        query = select(User.user_id)
-        result = await session.execute(query)
-        users = result.scalars().all()
-        logger.debug(f"Получено {len(users)} пользователей из user")
-        return users
+        if user_code:
+            return True, user_code.participant_id
+        return False, None
     except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении списка пользователей: {e}")
-        return []
+        logger.error(f"Check user code error: {e}")
+        return False, None
 
-async def orm_Change_RegStaus(session: AsyncSession, user_id: int, new_reg_status: bool) -> bool:
-    """Изменяет статус регистрации пользователя и управляет ActiveUser."""
+
+async def verify_user_code(
+        session: AsyncSession,
+        code: str,
+        telegram_username: str,
+        telegram_chat_id: int
+) -> bool:
+    """
+    Обновляет статус верификации кода пользователя.
+    Возвращает True если обновление прошло успешно.
+    """
     try:
-        user = await session.get(User, user_id)
-        if not user:
-            logger.warning(f"Пользователь user_id={user_id} не найден в user")
-            return False
-        user.reg_status = new_reg_status
-        if not new_reg_status:
-            await session.execute(
-                delete(ActiveUser).where(ActiveUser.user_id == user_id)
+        result = await session.execute(
+            update(UserCode)
+            .where(UserCode.code == code)
+            .values(
+                telegram_username=telegram_username,
+                telegram_chat_id=telegram_chat_id,
+                is_verified=True,
+                verified_at=datetime.utcnow()
             )
+        )
         await session.commit()
-        logger.info(f"Статус регистрации user_id={user_id} изменен на {new_reg_status}")
-        return True
+        return result.rowcount > 0
     except SQLAlchemyError as e:
+        logger.error(f"Verify user code error: {e}")
         await session.rollback()
-        logger.error(f"Ошибка базы данных при изменении статуса user_id={user_id}: {e}")
         return False
 
-async def orm_Check_avail_user(session: AsyncSession, user_id: int) -> bool:
-    """Проверяет, существует ли пользователь с указанным user_id."""
-    try:
-        result = await session.get(User, user_id)
-        return bool(result)
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при проверке user_id={user_id}: {e}")
-        return False
 
-async def orm_Check_register_user(session: AsyncSession, user_id: int) -> Optional[str]:
-    """Проверяет, зарегистрирован ли пользователь как активный."""
+async def get_verified_user_by_chat_id(session: AsyncSession, chat_id: int) -> Optional[UserCode]:
+    """
+    Получает верифицированного пользователя по chat_id.
+    """
     try:
-        result = await session.get(ActiveUser, user_id)
-        return result.name if result else None
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при проверке регистрации user_id={user_id}: {e}")
-        return None
-
-async def orm_Get_info_user(session: AsyncSession, user_id: int) -> Optional[ActiveUser]:
-    """Получает информацию о пользователе из active_user."""
-    try:
-        result = await session.get(ActiveUser, user_id)
-        return result
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении данных user_id={user_id}: {e}")
-        return None
-
-async def orm_Edit_user_profile(session: AsyncSession, user_id: int, data: Dict) -> bool:
-    """Редактирует профиль пользователя."""
-    try:
-        user = await session.get(ActiveUser, user_id)
-        if not user:
-            logger.warning(f"Пользователь user_id={user_id} не найден в active_user")
-            return False
-        for key, value in data.items():
-            field = key.replace("edit_", "")
-            if hasattr(user, field):
-                setattr(user, field, value)
-        await session.commit()
-        logger.info(f"Профиль user_id={user_id} обновлен")
-        return True
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при редактировании профиля user_id={user_id}: {e}")
-        return False
-
-async def orm_add_admin(session: AsyncSession, user_id: int, username: str) -> bool:
-    """Добавляет администратора в базу данных."""
-    try:
-        obj = Admin(user_id=user_id, nickname=username)
-        session.add(obj)
-        await session.commit()
-        logger.info(f"Администратор user_id={user_id} добавлен")
-        return True
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при добавлении admin user_id={user_id}: {e}")
-        return False
-
-async def orm_get_list_admin(session: AsyncSession) -> List[int]:
-    """Возвращает список всех user_id администраторов."""
-    try:
-        query = select(Admin.user_id)
-        result = await session.execute(query)
-        admins = result.scalars().all()
-        return admins
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении списка админов: {e}")
-        return []
-
-async def orm_add_news(session: AsyncSession, post_id: int, text: str, photo: str) -> bool:
-    """Добавляет новость в базу данных."""
-    try:
-        obj = News(post_id=post_id, text=text, image=photo)
-        session.add(obj)
-        await session.commit()
-        logger.info(f"Новость post_id={post_id} добавлена")
-        return True
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при добавлении новости post_id={post_id}: {e}")
-        return False
-
-async def orm_get_news_by_id(session: AsyncSession, id: int) -> Optional[News]:
-    """Возвращает новость по её идентификатору."""
-    try:
-        return await session.get(News, id)
-    except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении новости id={id}: {e}")
-        return None
-
-async def orm_edit_news_by_id(session: AsyncSession, post_id: int, text: str = None, photo: str = None) -> bool:
-    """Редактирует новость по её идентификатору."""
-    try:
-        updates = {}
-        if text is not None:
-            updates["text"] = text
-        if photo is not None:
-            updates["image"] = photo
-        if updates:
-            await session.execute(
-                update(News)
-                .where(News.post_id == post_id)
-                .values(**updates)
+        result = await session.execute(
+            select(UserCode)
+            .where(
+                and_(
+                    UserCode.telegram_chat_id == chat_id,
+                    UserCode.is_verified == True
+                )
             )
-            await session.commit()
-            logger.info(f"Новость post_id={post_id} обновлена")
-            return True
-        return False
+        )
+        return result.scalar_one_or_none()
     except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(f"Ошибка базы данных при редактировании новости post_id={post_id}: {e}")
-        return False
+        logger.error(f"Get user by chat_id error: {e}")
+        return None
 
-async def orm_get_all_news(session: AsyncSession) -> List[News]:
-    """Возвращает список всех новостей."""
+
+async def get_all_news(session: AsyncSession) -> List[News]:
+    """Получает все новости"""
     try:
-        query = select(News)
-        result = await session.execute(query)
+        result = await session.execute(select(News).order_by(News.date.desc()))
         return result.scalars().all()
     except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении всех новостей: {e}")
+        logger.error(f"Get news error: {e}")
+        return []
+
+
+async def get_materials_batch(session: AsyncSession, batch_num: int, batch_size: int = 5) -> List[Material]:
+    """Получает материалы пачками"""
+    try:
+        offset = (batch_num - 1) * batch_size
+        result = await session.execute(
+            select(Material)
+            .offset(offset)
+            .limit(batch_size)
+        )
+        return result.scalars().all()
+    except SQLAlchemyError as e:
+        logger.error(f"Get materials error: {e}")
         return []
 
 async def orm_get_all_themes_by_category_id(session: AsyncSession, category_id: int) -> List[Theme]:
@@ -227,6 +121,7 @@ async def orm_get_all_themes_by_category_id(session: AsyncSession, category_id: 
         logger.error(f"Ошибка базы данных при получении тем category_id={category_id}: {e}")
         return []
 
+
 async def orm_get_theme_by_id(session: AsyncSession, theme_id: int) -> Optional[Theme]:
     """Получает тему по ID."""
     try:
@@ -235,14 +130,29 @@ async def orm_get_theme_by_id(session: AsyncSession, theme_id: int) -> Optional[
         logger.error(f"Ошибка базы данных при получении темы id={theme_id}: {e}")
         return None
 
-async def orm_get_material_by_id(session: AsyncSession, material_id: int) -> List[Material]:
-    """Получает материалы по диапазону ID."""
+
+async def get_participant_by_id(session: AsyncSession, participant_id: int) -> Optional[Participant]:
+    """Асинхронно получает участника по его ID"""
     try:
-        query = select(Material).where(
-            (Material.id >= 1 + 5 * material_id) & (Material.id <= (material_id + 1) * 5)
+        result = await session.execute(
+            select(Participant)
+            .where(Participant.id == participant_id)
         )
-        result = await session.execute(query)
-        return result.scalars().all()
+        return result.scalar_one_or_none()
     except SQLAlchemyError as e:
-        logger.error(f"Ошибка базы данных при получении материалов material_id={material_id}: {e}")
-        return []
+        logger.error(f"Get participant by id error: {e}")
+        return None
+
+async def get_participant_theme_and_work(session: AsyncSession, participant_id: int) -> Optional[Dict[str, str]]:
+    """Асинхронно получает тему и ссылку на работу участника"""
+    try:
+        participant = await get_participant_by_id(session, participant_id)
+        if participant:
+            return {
+                "theme": participant.theme,
+                "work_link": participant.work_link
+            }
+        return None
+    except SQLAlchemyError as e:
+        logger.error(f"Get participant theme and work error: {e}")
+        return None
