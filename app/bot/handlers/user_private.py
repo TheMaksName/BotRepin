@@ -5,18 +5,19 @@ from typing import Dict, Union, Callable, Awaitable, List
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton, \
+    ReplyKeyboardRemove
 from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.bot.FSM.FSM_user_private import RegistrationUser, User_MainStates
+from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink
 
 from app.bot.handlers.user_registartion import user_registration_router
 from app.database.models import Material
 from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
-    get_participant_theme_and_work
+    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link
 from app.kbds.inline import get_callback_btns, create_material_buttons
-from app.kbds.reply import get_keyboard
+from app.kbds.reply import get_keyboard, del_kbd, menu_kb
 from app.kbds import reply
 from config import settings
 
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 # Создаем роутер для приватных команд пользователя
 user_private_router = Router()
 
-# user_private_router.include_router(user_view_profile_router)
 
 # Кэш для хранения текущей новости и темы для каждого пользователя
 # Кэш с тайм-аутом
@@ -179,10 +179,52 @@ async def create_material_buttons(
 
     return builder.as_markup()
 
+@user_private_router.message(F.text.lower() == 'отправить|изменить работу')
+async def change_work_link(message: Message, state: FSMContext):
+    await state.set_state(EditWorkLink.waiting_link)
+    await message.answer("Обновление ссылка на работу.", reply_markup=ReplyKeyboardRemove())
+    inline_markup = get_callback_btns(btns={"Отменить❌": "cancel_change_link"})
+    await message.answer(
+        "🔗 Введите новую ссылку на работу вашей команды:\n"
+        "(URL должен начинаться с http:// или https://)\n\n",
+        reply_markup=inline_markup
+    )
+
+@user_private_router.callback_query(EditWorkLink.waiting_link, F.data == "cancel_change_link")
+async def cancel_change_work_link(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Обновление отменено.", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
+
+@user_private_router.message(EditWorkLink.waiting_link, F.text)
+async def procces_new_link(message: Message, state: FSMContext, session: AsyncSession):
+    new_link = message.text.strip()
+    success = await update_team_work_link(session, message.chat.id, new_link)
+
+    if success:
+        await message.answer("✅ Ссылка на работу успешно обновлена!", reply_markup=menu_kb)
+        await state.set_state(User_MainStates.after_registration)
+        team_info = await get_team_info_by_chat_id(session, message.chat.id)
+        if team_info:
+            await message.answer(
+                f"🏆 <b>Информация о вашей команде</b>\n\n"
+                f"🔹 Название команды: {team_info['team_name']}\n"
+                f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+                f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+                f"🔹 Участников: {team_info['participants_count']}"
+            )
+        else:
+            await message.answer(
+                "❌ Не удалось обновить ссылку. Проверьте формат ссылки "
+                "(она должна начинаться с http:// или https://) или "
+                "обратитесь к организаторам, если проблема сохраняется.",
+                reply_markup=menu_kb
+            )
+            await state.set_state(User_MainStates.after_registration)
 
 # Обработчик для команды "выбрать тему"
-@user_private_router.message(F.text.lower() == 'посмотреть темы')
-async def get_theme(message: Message, session: AsyncSession, state: FSMContext) -> None:
+@user_private_router.message(F.text.lower() == 'выбрать тему')
+async def get_theme(message: Message, session: AsyncSession) -> None:
     """Показывает список тем."""
     user_id = message.from_user.id
     await paginate_items(
@@ -244,98 +286,57 @@ async def confirm_theme(callback: CallbackQuery, session: AsyncSession, state: F
     """Подтверждение или отмена выбора темы."""
     confirm_theme_id = callback.data.split("_")[2]
     if confirm_theme_id:
-        user_id = callback.from_user.id
+        chat_id = callback.message.chat.id
         theme = await orm_get_theme_by_id(session, int(confirm_theme_id))
-        await orm_Edit_user_profile(session, user_id, {'edit_theme': f"{theme.title} {theme.technique}"})
+        await update_team_work_theme(
+        session,
+        chat_id,
+            f"{theme.title} {theme.technique}"
+    )
         state_data = await state.get_data()
         await callback.bot.delete_messages(callback.message.chat.id,
                                            [callback.message.message_id, state_data.get("prev_message_id")])
         await callback.message.answer("Тема успешно выбрана📥")
+        team_info = await get_team_info_by_chat_id(session, chat_id)
+        if team_info:
+            await callback.message.answer(
+                f"🏆 <b>Информация о вашей команде</b>\n\n"
+                f"🔹 Название команды: {team_info['team_name']}\n"
+                f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+                f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+                f"🔹 Участников: {team_info['participants_count']}"
+            )
     else:
         await callback.message.delete()
 
-    # confirm_theme_id = callback.data.split("_")[2]
-    # if confirm_theme_id:
-    #     user_id = callback.from_user.id
-    #     current_theme = await orm_get_theme_by_id(session=session, theme_id=int(confirm_theme_id))
-    #     data = {'edit_theme': f'{current_theme.title} {current_theme.technique}'}
-    #     await orm_Edit_user_profile(session=session, user_id=user_id, data=data)
-    #
-    #     message_ids_to_delete = []
-    #     state_data = await state.get_data()
-    #     prev_message_id = state_data.get("prev_message_id")
-    #
-    #     # Добавляем текущее сообщение в список для удаления
-    #     message_ids_to_delete.append(callback.message.message_id)
-    #     message_ids_to_delete.append(prev_message_id)
-    #
-    #     await callback.bot.delete_messages(callback.message.chat.id, message_ids_to_delete)
-    #
-    #
-    #     await callback.message.answer("Тема успешна выбрана📥")
-    # else:
-    #     await callback.message.delete()
 
 # Обработчик для команды "мой профиль"
 @user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'мой профиль')
 async def get_user_profile(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Показывает профиль пользователя."""
+    """
+       Обработчик команды /my_team - показывает информацию о команде пользователя
+       """
+    # Получаем chat_id из сообщения
+    chat_id = message.chat.id
 
-    participant = await get_participant_theme_and_work(session, message.chat.id)
-
-    if not participant:
-        await message.answer("❌ Информация об участнике не найдена.")
-        return
+    # Получаем информацию о команде
+    team_info = await get_team_info_by_chat_id(session, chat_id)
+    if not team_info:
+        return await message.answer(
+            "❌ Вы не состоите ни в одной команде или не завершили верификацию.\n\n"
+            "Используйте /start для начала верификации."
+        )
 
     # Формируем ответ
     response = (
-        f"📌 Ваша тема: {participant.theme}\n"
-        f"🔗 Ссылка на работу: {participant.work_link or 'не указана'}"
+        f"🏆 <b>Информация о вашей команде</b>\n\n"
+        f"🔹 Название команды: {team_info['team_name']}\n"
+        f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+        f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+        f"🔹 Участников: {team_info['participants_count']}"
     )
 
     await message.answer(response)
 
-    # await state.set_state(User_MainStates.user_view_profile)
-    # data = await orm_Get_info_user(session, message.from_user.id)
-    # if data:
-    #     result_answer = (f"📄ФИО: {data.name}\n"
-    #                     f"🏫Школа: {data.school}\n"
-    #                     f"📱Номер телефона: {data.phone_number}\n"
-    #                     f"📧Электронная почта: {data.mail}\n"
-    #                     f"👨‍🏫ФИО наставника: {data.name_mentor}\n"
-    #                     f"👪Должность наставника: {data.post_mentor if data.post_mentor else ''}\n"
-    #                     f"📜Тема: {data.theme}")
-    #
-    #     reply_markup = get_keyboard(
-    #         "Редактировать",
-    #         "Назад",
-    #         placeholder="Выберите действие",
-    #         sizes=(2,),
-    #     )
-    #     await message.answer("Открываю Ваш профиль")
-    #     await message.answer(result_answer, reply_markup=reply_markup)
-    # else:
-    #     await message.answer("Профиль не найден")
-
-
-
-
-
-
-# @user_private_router.message(Command('admin'))
-# async def admin(message: Message, session: AsyncSession, state: FSMContext):
-#     list_admins = list(await orm_get_list_admin(session=session))
-#     print(list_admins)
-#     if message.from_user.username == settings.USER_ADMIN_NICK or message.from_user.id in list_admins:
-#         reply_markup = admin_kb
-#         if message.from_user.id not in list_admins:
-#             await orm_add_admin(session=session, user_id=message.from_user.id, username=message.from_user.username)
-#         if message.from_user.username == settings.USER_ADMIN_NICK:
-#             reply_markup = admin_kb
-#             reply_markup.keyboard[1].append(KeyboardButton(text="Добавить админа"))
-#         await message.answer(text="Вы вошли как админ", reply_markup=reply_markup)
-#         await state.set_state(Admin_MainStates.choice_action)
-#     else:
-#         await message.answer(text="У вас недостаточно прав")
 
 

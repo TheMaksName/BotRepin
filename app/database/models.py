@@ -17,10 +17,17 @@ class Participant(Base):
     __tablename__ = 'reg_participant'  # Имя таблицы как в Django
 
     id = Column(Integer, primary_key=True)
-    theme = Column(String(200))  # Поле "Тема"
-    work_link = Column(String(500))  # Поле "Работа" (ссылка)
-
-    verification_code: Mapped["UserCode"] = relationship("UserCode", back_populates="participant", uselist=False)
+    team_id = Column(Integer, ForeignKey('reg_team.id'), nullable=True)
+    verification_code = relationship(
+        "UserCode",
+        back_populates="participant",
+        uselist=False
+    )
+    team = relationship(
+        "Team",
+        back_populates="participants",
+        foreign_keys=[team_id]  # Явное указание foreign key
+    )
 
 class UserCode(Base):
     """Модель кода верификации Telegram"""
@@ -46,6 +53,36 @@ class UserCode(Base):
         return f"<UserCode(code='{self.code}', participant_id={self.participant_id}, is_verified={self.is_verified})>"
 
 
+class Team(Base):
+    __tablename__ = 'reg_team'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), unique=True, nullable=False, info={'verbose_name': "Название команды"})
+    work_theme = Column(
+        String(255),
+        nullable=True,
+        info={
+            'verbose_name': "Тема работы",
+            'help_text': "Укажите тему работы вашей команды"
+        }
+    )
+    work_link = Column(
+        String(500),
+        nullable=True,
+        info={
+            'verbose_name': "Ссылка на работу",
+            'help_text': "Укажите ссылку на работу (если есть)"
+        }
+    )
+    created_by_id = Column(Integer, ForeignKey('reg_participant.id'), nullable=True)
+
+    participants = relationship(
+        "Participant",
+        back_populates="team",
+        foreign_keys="[Participant.team_id]"  # Явное указание foreign key
+    )
+
+    def __repr__(self):
+        return f"<Team(name='{self.name}')>"
 
 # Модель для новостей
 class News(Base):

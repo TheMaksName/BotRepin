@@ -143,22 +143,126 @@ async def get_participant_by_id(session: AsyncSession, participant_id: int) -> O
         logger.error(f"Get participant by id error: {e}")
         return None
 
-async def get_participant_theme_and_work(session: AsyncSession, chat_id: int) -> Optional[Dict[str, str]]:
-    """Асинхронно получает тему и ссылку на работу участника по chat_id"""
+
+async def get_team_info_by_chat_id(
+        session: AsyncSession,
+        chat_id: int
+) -> Optional[Dict[str, Optional[str | int]]]:
+    """
+    Получает информацию о команде участника по Telegram chat_id.
+    Возвращает словарь с данными команды или None, если участник не верифицирован или не в команде.
+    """
     try:
-        result = await session.execute(
-            select(Participant.theme, Participant.work_link)
-            .join(UserCode, UserCode.participant_id == Participant.id)
-            .where(UserCode.telegram_chat_id == chat_id)
+        # Получаем верифицированного пользователя с полной загрузкой связей
+        user_code = await session.execute(
+            select(UserCode)
+            .where(
+                and_(
+                    UserCode.telegram_chat_id == chat_id,
+                    UserCode.is_verified == True
+                )
+            )
+            .options(
+                selectinload(UserCode.participant)
+                .selectinload(Participant.team)
+            )
         )
-        row = result.first()
-        
-        if row:
-            return {
-                "theme": row.theme,
-                "work_link": row.work_link
-            }
-        return None
+        user_code = user_code.scalar_one_or_none()
+
+        if not user_code or not user_code.participant:
+            logger.debug(f"No verified participant found for chat_id: {chat_id}")
+            return None
+
+        participant = user_code.participant
+
+        if not participant.team:
+            logger.debug(f"No team found for participant: {participant.id}")
+            return None
+
+        team = participant.team
+        logger.debug(f"Team loaded: {team.id} - {team.name}")
+
+        # Получаем количество участников команды
+        participants_count = await session.execute(
+            select(func.count(Participant.id))
+            .where(Participant.team_id == team.id)
+        )
+        participants_count = participants_count.scalar_one()
+
+        return {
+            "team_name": team.name,
+            "work_theme": team.work_theme,
+            "work_link": team.work_link,
+            "participants_count": participants_count,
+        }
+
     except SQLAlchemyError as e:
-        logger.error(f"Get participant theme and work error: {e}")
+        logger.error(f"Get team info by chat_id error: {e}", exc_info=True)
         return None
+
+
+async def update_team_work_theme(
+        session: AsyncSession,
+        chat_id: int,
+        new_theme: str
+) -> bool:
+    """
+    Обновляет тему работы команды для участника с указанным chat_id
+    Возвращает True при успешном обновлении
+    """
+    try:
+        # Находим участника через его chat_id
+        user_code = await session.execute(
+            select(UserCode)
+            .where(UserCode.telegram_chat_id == chat_id)
+            .options(selectinload(UserCode.participant).selectinload(Participant.team))
+        )
+        user_code = user_code.scalar_one_or_none()
+
+        if not user_code or not user_code.participant or not user_code.participant.team:
+            return False
+
+        team = user_code.participant.team
+        team.work_theme = new_theme
+        await session.commit()
+        return True
+
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating team theme: {e}")
+        await session.rollback()
+        return False
+
+
+async def update_team_work_link(
+        session: AsyncSession,
+        chat_id: int,
+        new_link: str
+) -> bool:
+    """
+    Обновляет ссылку на работу команды для участника с указанным chat_id
+    Возвращает True при успешном обновлении
+    """
+    try:
+        # Проверяем, что ссылка валидная (опционально)
+        if not new_link.startswith(('http://', 'https://')):
+            new_link = f'https://{new_link}'
+
+        user_code = await session.execute(
+            select(UserCode)
+            .where(UserCode.telegram_chat_id == chat_id)
+            .options(selectinload(UserCode.participant).selectinload(Participant.team))
+        )
+        user_code = user_code.scalar_one_or_none()
+
+        if not user_code or not user_code.participant or not user_code.participant.team:
+            return False
+
+        team = user_code.participant.team
+        team.work_link = new_link
+        await session.commit()
+        return True
+
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating team link: {e}")
+        await session.rollback()
+        return False
