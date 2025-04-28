@@ -1,26 +1,23 @@
 import asyncio
 import logging
-from idlelib.grep import walk_error
-from multiprocessing.util import sub_warning
 from time import time
 from typing import Dict, Union, Callable, Awaitable, List
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton, \
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, \
     ReplyKeyboardRemove
-from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink, AddNewTheme
 
-from app.bot.handlers.user_registartion import user_registration_router
+
 from app.database.models import Material
 from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
     get_team_info_by_chat_id, update_team_work_theme, update_team_work_link, orm_create_theme
 from app.kbds.inline import get_callback_btns, create_material_buttons
-from app.kbds.reply import get_keyboard, del_kbd, menu_kb
-from app.kbds import reply
+from app.kbds.reply import menu_kb
+
 from config import settings
 
 logger = logging.getLogger(__name__)
