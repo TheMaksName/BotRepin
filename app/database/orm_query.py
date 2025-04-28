@@ -130,6 +130,42 @@ async def orm_get_theme_by_id(session: AsyncSession, theme_id: int) -> Optional[
         logger.error(f"Ошибка базы данных при получении темы id={theme_id}: {e}")
         return None
 
+async def orm_create_theme(
+    session: AsyncSession,
+    title: str,
+    technique: str,
+    category_id: int = 6
+) -> Optional[Theme]:
+    """
+    Создает новую тему в базе данных.
+    Возвращает созданную тему или None в случае ошибки.
+    """
+    try:
+        new_theme = Theme(
+            title=title,
+            technique=technique,
+            category_id=category_id
+        )
+        session.add(new_theme)
+        await session.flush()
+        await session.commit()
+        await session.refresh(new_theme)
+        return new_theme
+    except SQLAlchemyError as e:
+        logger.error(f"Ошибка при создании темы: {e}")
+        await session.rollback()
+        # Попробуем еще раз с новым ID
+        try:
+            await session.flush()
+            new_theme.id = None  # Сбросим ID для автоинкремента
+            session.add(new_theme)
+            await session.commit()
+            await session.refresh(new_theme)
+            return new_theme
+        except Exception as retry_error:
+            logger.error(f"Ошибка при повторной попытке создания темы: {retry_error}")
+            await session.rollback()
+            return None
 
 async def get_participant_by_id(session: AsyncSession, participant_id: int) -> Optional[Participant]:
     """Асинхронно получает участника по его ID"""
@@ -231,6 +267,7 @@ async def update_team_work_theme(
         logger.error(f"Error updating team theme: {e}")
         await session.rollback()
         return False
+
 
 
 async def update_team_work_link(

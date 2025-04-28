@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from idlelib.grep import walk_error
+from multiprocessing.util import sub_warning
 from time import time
 from typing import Dict, Union, Callable, Awaitable, List
 
@@ -10,12 +12,12 @@ from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InlineKeyboar
 from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink
+from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink, AddNewTheme
 
 from app.bot.handlers.user_registartion import user_registration_router
 from app.database.models import Material
 from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
-    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link
+    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link, orm_create_theme
 from app.kbds.inline import get_callback_btns, create_material_buttons
 from app.kbds.reply import get_keyboard, del_kbd, menu_kb
 from app.kbds import reply
@@ -234,8 +236,9 @@ async def get_theme(message: Message, session: AsyncSession) -> None:
             f"{t.id}🟦 {t.title}\n📌Прием: {t.technique}" for t in ts),
         lambda ts, _: get_callback_btns(
             btns=({f"Тема №{t.id}": f"choice_theme_{t.id}" for t in ts} if settings.prod else {}) | {
-                "Далее": "slide_theme_next"},
-            sizes=(3, 3, 2)
+                "Далее": "slide_theme_next",
+                "Своя тема": "custom_theme"},  # Добавлена кнопка "Своя тема"
+            sizes=(3, 3, 1, 1)  # Обновлены размеры для новой кнопки
         )
     )
 
@@ -257,6 +260,7 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession) -> None:
             btns["Назад"] = "slide_theme_back"
         if next_exists:
             btns["Далее"] = "slide_theme_next"
+        btns['Своя тема'] = "custom_theme"
         return get_callback_btns(btns=btns, sizes=(3, 3, 2))
 
     await paginate_items(
@@ -279,7 +283,103 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession, state: FS
             btns={"Подверждаю✅": f"confirm_theme_{theme_id}", "Я передумал❌": "confirm_theme_"})
     )
 
+@user_private_router.callback_query(F.data.startswith('custom_theme'))
+async def choice_custom_theme(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddNewTheme.waiting_title)
 
+
+    inline_markup = get_callback_btns(btns={"Отменить❌": "cancel_change_custom_theme"})
+    await callback.message.answer(
+        "🔹 Вы выбрали создание своей темы.\n\n"
+        "Введите название вашей темы (до 100 символов):",
+        reply_markup=inline_markup
+    )
+    await state.update_data(prev_message_id=callback.message.message_id+1)
+    await callback.answer()
+
+@user_private_router.message(AddNewTheme.waiting_title, F.text)
+async def add_title_for_newtheme(message: Message, state:FSMContext):
+    if len(message.text) > 100:
+        await message.answer("Название слишком длинное (максимум 100 символов). Попробуйте снова:",
+                             reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"}))
+        return
+    data = await state.get_data()
+    prev_message_id = data.get("prev_message_id")
+    await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id, reply_markup=None)
+    await state.update_data(title=message.text)
+    await state.set_state(AddNewTheme.waiting_techiquae)
+    await message.answer("Теперь введите прием, который вы будете использовать (до 100 символов):",
+        reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"})
+    )
+    await state.update_data(prev_message_id=message.message_id+1)
+
+@user_private_router.message(AddNewTheme.waiting_techiquae, F.text)
+async def add_techiquae_for_newtheme(message: Message, state:FSMContext, session: AsyncSession):
+    if len(message.text) > 100:
+        await message.answer("Описание приема слишком длинное (максимум 100 символов). Попробуйте снова:",
+                             reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"})
+                             )
+        return
+    data = await state.get_data()
+    title = data.get("title", '')
+    technique = message.text
+
+    new_theme = await orm_create_theme(
+        session=session,
+        title=title,
+        technique=technique,
+        category_id=6
+    )
+    data = await state.get_data()
+    prev_message_id = data.get("prev_message_id")
+    if not new_theme:
+
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer("❌ Не удалось создать тему. Пожалуйста, попробуйте позже.",
+            reply_markup=menu_kb
+        )
+        await state.set_state(User_MainStates.after_registration)
+        return
+
+    chat_id = message.chat.id
+    success = await update_team_work_theme(
+        session,
+        chat_id,
+        f"{title} {technique}"
+    )
+
+    if success:
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer(
+            f"✅ Ваша тема успешно создана и сохранена!\n\n"
+            f"🏷 Название: {title}\n"
+            f"🛠 Технология: {technique}",
+            reply_markup=menu_kb
+        )
+    else:
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer(
+            "❌ Тема создана, но не привязана к команде. Обратитесь к организаторам.",
+            reply_markup=menu_kb
+        )
+
+    await state.set_state(User_MainStates.after_registration)
+
+@user_private_router.callback_query(F.data == "cancel_change_custom_theme")
+async def cancel_change_custom_theme(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(User_MainStates.after_registration)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Cоздание новой темы отменено.", reply_markup=menu_kb)
+    await callback.answer()
+
+@user_private_router.callback_query(EditWorkLink.waiting_link, F.data == "cancel_change_link")
+async def cancel_change_work_link(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Обновление отменено.", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
 
 @user_private_router.callback_query(F.data.startswith("confirm_theme_"))
 async def confirm_theme(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:

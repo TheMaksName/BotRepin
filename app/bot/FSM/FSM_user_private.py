@@ -14,3 +14,7 @@ class EditWorkLink(StatesGroup):
 class ChoiceTheme(StatesGroup):
     current_theme = State()
     prev_message_id = State()
+
+class AddNewTheme(StatesGroup):
+    waiting_title = State()
+    waiting_techiquae = State()
