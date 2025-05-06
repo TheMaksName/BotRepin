@@ -18,3 +18,6 @@ class ChoiceTheme(StatesGroup):
 class AddNewTheme(StatesGroup):
     waiting_title = State()
     waiting_techiquae = State()
+
+class EditProfile(StatesGroup):
+    waiting_new_school = State()

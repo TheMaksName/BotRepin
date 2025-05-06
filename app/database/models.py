@@ -1,8 +1,8 @@
-import secrets
+
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import String, Boolean, Text, DateTime, func, ForeignKey, Index, ForeignKeyConstraint, Column, Integer, \
+from sqlalchemy import String, Boolean, Text, DateTime, func, ForeignKey, Index, Column, Integer, \
     BigInteger
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -18,6 +18,7 @@ class Participant(Base):
 
     id = Column(Integer, primary_key=True)
     team_id = Column(Integer, ForeignKey('reg_team.id'), nullable=True)
+    school = Column(String(200), nullable=False, info={'verbose_name': "Школа"})
     verification_code = relationship(
         "UserCode",
         back_populates="participant",

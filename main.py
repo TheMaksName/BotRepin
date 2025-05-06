@@ -6,7 +6,6 @@ from typing import List
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.handlers.user_private import user_private_router
 from app.bot.handlers.user_registartion import user_registration_router
@@ -15,15 +14,15 @@ from app.bot.middlewares.db import DataBaseSession
 from app.database.engine import create_db, drop_db, session_maker
 
 
-# from app.bot.handlers.user_private import user_private_router
 
-from aiogram.filters import CommandStart, Command
+
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BotCommandScopeAllPrivateChats, Message, ReplyKeyboardRemove
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.FSM.FSM_user_private import User_MainStates
-
+from app.database.models import UserCode
 
 from config import settings
 
@@ -41,36 +40,36 @@ logger = logging.getLogger(__name__)
 # Глобальный кэш для user_ids (заполняется при запуске)
 USER_IDS_CACHE: List[int] = []
 
-# async def fetch_user_ids(session: AsyncSession) -> List[int]:
-#     """Получает список всех user_id из таблицы User."""
-#     query = select(User.user_id)
-#     result = await session.execute(query)
-#     return result.scalars().all()
+async def fetch_user_ids(session: AsyncSession) -> List[int]:
+     """Получает список всех user_id из таблицы User."""
+     query = select(UserCode.telegram_chat_id)
+     result = await session.execute(query)
+     return result.scalars().all()
 
-# async def send_message_batch(bot: Bot, user_ids: List[int], message_text: str, batch_size: int = 30) -> None:
-#     """Отправляет сообщения партиями с учетом лимитов Telegram."""
-#     for i in range(0, len(user_ids), batch_size):
-#         batch = user_ids[i:i + batch_size]
-#         tasks = [bot.send_message(chat_id=user_id, text=message_text, reply_markup=ReplyKeyboardRemove()) for user_id in batch]
-#         results = await asyncio.gather(*tasks, return_exceptions=True)
-#         for user_id, result in zip(batch, results):
-#             if isinstance(result, Exception):
-#                 logger.warning(f"Не удалось отправить сообщение user_id={user_id}: {result}")
-#             else:
-#                 logger.debug(f"Сообщение отправлено user_id={user_id}")
-#         await asyncio.sleep(1)  # Пауза 1 секунда между партиями (30 сообщений/сек)
-#
-# async def send_message_to_all_users(bot: Bot, session: AsyncSession, message_text: str) -> None:
-#     """Отправляет сообщение всем пользователям из кэша или базы."""
-#     global USER_IDS_CACHE
-#     try:
-#         if not USER_IDS_CACHE:
-#             USER_IDS_CACHE = await fetch_user_ids(session)
-#         await send_message_batch(bot, USER_IDS_CACHE, message_text)
-#         logger.info(f"Сообщения отправлены {len(USER_IDS_CACHE)} пользователям")
-#     except Exception as e:
-#         logger.error(f"Ошибка при отправке сообщений всем пользователям: {e}")
-#         raise
+async def send_message_batch(bot: Bot, user_ids: List[int], message_text: str, batch_size: int = 30) -> None:
+     """Отправляет сообщения партиями с учетом лимитов Telegram."""
+     for i in range(0, len(user_ids), batch_size):
+         batch = user_ids[i:i + batch_size]
+         tasks = [bot.send_message(chat_id=user_id, text=message_text, reply_markup=ReplyKeyboardRemove()) for user_id in batch]
+         results = await asyncio.gather(*tasks, return_exceptions=True)
+         for user_id, result in zip(batch, results):
+             if isinstance(result, Exception):
+                 logger.warning(f"Не удалось отправить сообщение user_id={user_id}: {result}")
+             else:
+                 logger.debug(f"Сообщение отправлено user_id={user_id}")
+         await asyncio.sleep(1)  # Пауза 1 секунда между партиями (30 сообщений/сек)
+
+async def send_message_to_all_users(bot: Bot, session: AsyncSession, message_text: str) -> None:
+     """Отправляет сообщение всем пользователям из кэша или базы."""
+     global USER_IDS_CACHE
+     try:
+         if not USER_IDS_CACHE:
+             USER_IDS_CACHE = await fetch_user_ids(session)
+         await send_message_batch(bot, USER_IDS_CACHE, message_text)
+         logger.info(f"Сообщения отправлены {len(USER_IDS_CACHE)} пользователям")
+     except Exception as e:
+         logger.error(f"Ошибка при отправке сообщений всем пользователям: {e}")
+         raise
 
 def get_startup_handler(reset_db: bool):
     async def startup(bot: Bot) -> None:
@@ -85,10 +84,10 @@ def get_startup_handler(reset_db: bool):
             # Отправка сообщения всем пользователям
             async with session_maker() as session:
                 welcome_message = (
-                    "📢 Бот запущен!\n"
+                    "📢 Бот перезапущен!\n"
                     "Напишите команду /start для продолжения работы.✏"
                 )
-                # await send_message_to_all_users(bot, session, welcome_message)
+                await send_message_to_all_users(bot, session, welcome_message)
         except Exception as e:
             logger.error(f"Ошибка при запуске бота: {e}")
             raise

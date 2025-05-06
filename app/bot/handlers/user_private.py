@@ -9,14 +9,14 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, \
     ReplyKeyboardRemove
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink, AddNewTheme
-
+from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink, AddNewTheme, EditProfile
 
 from app.database.models import Material
 from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
-    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link, orm_create_theme
+    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link, orm_create_theme, \
+    get_verified_user_by_chat_id, get_participant_by_id, set_new_school_for_participants
 from app.kbds.inline import get_callback_btns, create_material_buttons
-from app.kbds.reply import menu_kb
+from app.kbds.reply import menu_kb, del_kbd
 
 from config import settings
 
@@ -204,8 +204,12 @@ async def procces_new_link(message: Message, state: FSMContext, session: AsyncSe
         await message.answer("✅ Ссылка на работу успешно обновлена!", reply_markup=menu_kb)
         await state.set_state(User_MainStates.after_registration)
         team_info = await get_team_info_by_chat_id(session, message.chat.id)
+
         if team_info:
             await message.answer(
+                f"<b>Информация о вас</b>\n\n"
+                f"🔹 Ваш ID участника: пусто\n"
+                f"🔹 Название вашей школы: пусто\n"
                 f"🏆 <b>Информация о вашей команде</b>\n\n"
                 f"🔹 Название команды: {team_info['team_name']}\n"
                 f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
@@ -286,12 +290,12 @@ async def choice_custom_theme(callback: CallbackQuery, state: FSMContext) -> Non
 
 
     inline_markup = get_callback_btns(btns={"Отменить❌": "cancel_change_custom_theme"})
+    await callback.message.answer("🔹 Вы выбрали создание своей темы.", reply_markup=del_kbd)
     await callback.message.answer(
-        "🔹 Вы выбрали создание своей темы.\n\n"
         "Введите название вашей темы (до 100 символов):",
         reply_markup=inline_markup
     )
-    await state.update_data(prev_message_id=callback.message.message_id+1)
+    await state.update_data(prev_message_id=callback.message.message_id+2)
     await callback.answer()
 
 @user_private_router.message(AddNewTheme.waiting_title, F.text)
@@ -418,6 +422,12 @@ async def get_user_profile(message: Message, session: AsyncSession, state: FSMCo
 
     # Получаем информацию о команде
     team_info = await get_team_info_by_chat_id(session, chat_id)
+    user_info = await get_verified_user_by_chat_id(session, chat_id)
+    participant_id = user_info.participant_id
+    participant_info = await get_participant_by_id(session, participant_id)
+
+
+
     if not team_info:
         return await message.answer(
             "❌ Вы не состоите ни в одной команде или не завершили верификацию.\n\n"
@@ -426,6 +436,9 @@ async def get_user_profile(message: Message, session: AsyncSession, state: FSMCo
 
     # Формируем ответ
     response = (
+        f"👫 <b>Информация о вас</b>\n\n"
+        f"🔹 Ваш ID участника: {user_info.participant_id}\n"
+        f"🔹 Название вашей школы: {participant_info.school}\n\n"
         f"🏆 <b>Информация о вашей команде</b>\n\n"
         f"🔹 Название команды: {team_info['team_name']}\n"
         f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
@@ -433,7 +446,37 @@ async def get_user_profile(message: Message, session: AsyncSession, state: FSMCo
         f"🔹 Участников: {team_info['participants_count']}"
     )
 
-    await message.answer(response)
+    await message.answer(response, reply_markup=get_callback_btns(btns={"Изменить название школы📝": "edit_school"}))
 
 
+@user_private_router.callback_query(User_MainStates.after_registration, F.data == "edit_school")
+async def choice_edit_school(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Вы редактируете название школы.", reply_markup=del_kbd)
+    await callback.message.answer("Введите полное название школы (не больше 200 символов).",
+                                  reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_edit_school"})
+                                  )
+    await state.set_state(EditProfile.waiting_new_school)
 
+@user_private_router.callback_query(EditProfile.waiting_new_school, F.data == "cancel_edit_school")
+async def cancel_edit_school(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Изменение школы отменено❌", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
+
+@user_private_router.message(EditProfile.waiting_new_school, F.text)
+async def edit_school(message: Message, session: AsyncSession, state: FSMContext):
+    if len(message.text) > 200:
+        await message.answer("Название школы не должно превышать 200 символов.")
+        return False
+
+    try:
+        chat_id = message.chat.id
+        user_info = await get_verified_user_by_chat_id(session, chat_id)
+        participant_id = user_info.participant_id
+        await set_new_school_for_participants(session, participant_id, message.text)
+        await message.answer("Название школы успешно обновлено", reply_markup=menu_kb)
+        await state.set_state(User_MainStates.after_registration)
+    except Exception as e:
+        await message.answer("При изменении школы произошла ошибка. Пожалуйста попробуйте позже")
+        logger.error(f"Error edit school: {e}")
+        await state.set_state(User_MainStates.after_registration)

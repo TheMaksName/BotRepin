@@ -1,8 +1,8 @@
 import logging
 
-from aiogram import Router, F, types
+from aiogram import Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
 from app.database.orm_query import check_user_code, verify_user_code
 from sqlalchemy.ext.asyncio import AsyncSession
 

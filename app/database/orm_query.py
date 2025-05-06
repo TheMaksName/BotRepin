@@ -303,3 +303,20 @@ async def update_team_work_link(
         logger.error(f"Error updating team link: {e}")
         await session.rollback()
         return False
+
+async def set_new_school_for_participants(session: AsyncSession, participant_id: int, new_school: str):
+
+    try:
+        result = await session.execute(
+            update(Participant)
+            .where(Participant.id == participant_id)
+            .values(
+                school = new_school
+            )
+        )
+        await session.commit()
+        return True
+    except SQLAlchemyError as e:
+        logger.error(f"Edit school error: {e}")
+        await session.rollback()
+        return False
