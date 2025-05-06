@@ -1,30 +1,30 @@
 import asyncio
 import logging
 from time import time
-from typing import Dict, Union, Callable, Awaitable
+from typing import Dict, Union, Callable, Awaitable, List
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command, StateFilter
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, \
+    ReplyKeyboardRemove
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.bot.FSM.FSM_user_private import RegistrationUser, User_MainStates
-from app.bot.handlers.user_edit_profile import user_view_profile_router
-from app.bot.handlers.user_registartion import user_registration_router
+from app.bot.FSM.FSM_user_private import User_MainStates, EditWorkLink, AddNewTheme, EditProfile
+
+from app.database.models import Material
+from app.database.orm_query import get_materials_batch, orm_get_all_themes_by_category_id, orm_get_theme_by_id, \
+    get_team_info_by_chat_id, update_team_work_theme, update_team_work_link, orm_create_theme, \
+    get_verified_user_by_chat_id, get_participant_by_id, set_new_school_for_participants
 from app.kbds.inline import get_callback_btns, create_material_buttons
-from app.kbds.reply import get_keyboard
-from app.database.orm_query import orm_Get_info_user, orm_get_news_by_id, orm_get_all_news, \
-    orm_get_all_themes_by_category_id, orm_get_theme_by_id, orm_Edit_user_profile, orm_get_material_by_id
-from app.kbds import reply
+from app.kbds.reply import menu_kb, del_kbd
+
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 # Создаем роутер для приватных команд пользователя
 user_private_router = Router()
-user_private_router.include_router(user_registration_router)
-user_private_router.include_router(user_view_profile_router)
+
 
 # Кэш для хранения текущей новости и темы для каждого пользователя
 # Кэш с тайм-аутом
@@ -68,15 +68,10 @@ async def paginate_items(
         await (message.answer if isinstance(message, Message) else message.message.edit_text)("Ошибка загрузки.")
 
 
-# Команда /menu для открытия меню
-# @user_private_router.message(Command('menu'))
-# async def menu(message: Message) -> None:
-#     """Открывает основное меню пользователя."""
-#     logger.info(f"Пользователь {message.from_user.id} открыл меню")
-#     await message.answer("Открываю меню...", reply_markup=reply.menu_kb)
+
 
 # Обработчик для команды "новости"
-@user_private_router.message(F.text.lower() == 'новости')
+@user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'новости')
 async def news(message: Message, session: AsyncSession) -> None:
     """Отправляет сообщение с ссылкой на Telegram-канал новостей."""
     builder = InlineKeyboardBuilder()
@@ -86,139 +81,153 @@ async def news(message: Message, session: AsyncSession) -> None:
         reply_markup=builder.as_markup()
     )
 
-    # """Показывает первую новость пользователю."""
-    # user_id = message.from_user.id
-    #
-    # await paginate_items(
-    #     message, session, user_id, 1,cache_current_news, orm_get_news_by_id,
-    #     lambda n: f"<strong>{n.text}</strong>" if n else "Новостей пока нет(((",
-    #     lambda n, _: get_callback_btns(btns={"Далее": "news_next"}) if n else None
-    # )
 
-
-
-
-# Обработчик для переключения между новостями
-@user_private_router.callback_query(F.data.startswith('news_'))
-async def slide_news(callback: CallbackQuery, session: AsyncSession) -> None:
-    """Переключает новости вперед или назад."""
-    user_id = callback.from_user.id
-    action = callback.data.split("_")[1]  # Определяем действие (next или back)
-    current_news_id = cache_current_news.get(user_id, 1)
-    new_id = current_news_id + 1 if action == 'next' else max(1, current_news_id - 1)
-
-    async def kb_func(news, _):
-        next_exists = await orm_get_news_by_id(session, new_id + 1)
-        return get_callback_btns(btns={"Назад": "news_back", "Далее": "news_next" if next_exists else None})
-
-    await paginate_items(
-        callback, session, user_id, new_id, cache_current_news,
-        orm_get_news_by_id,
-        lambda n: f"<strong>{n.text}</strong>",
-        kb_func
-    )
-    await callback.answer()
-
-
-
-# Обработчик для команды "материалы"
-@user_private_router.message(F.text.lower() == 'материалы')
+@user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'материалы')
 async def get_material(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Показывает список материалов с ссылками."""
+    """Показывает первую пачку материалов"""
     user_id = message.from_user.id
-    await paginate_items(
-        message, session, user_id, 0, cache_current_material,
-        orm_get_material_by_id,
-        lambda ms: "\n".join(f"{m.id}🟦 {m.title}" for m in ms) if ms else "Материалы отсутствуют",
-        lambda ms, _: create_material_buttons(ms) if ms else None
-    )
+    batch_num = 1  # Начинаем с первой пачки
+    cache_current_material[user_id] = batch_num  # Сохраняем текущую пачку
 
+    try:
+        materials = await get_materials_batch(session, batch_num)
 
+        if not materials:
+            await message.answer("Материалы отсутствуют")
+            return
+
+        text = "\n".join(f"{m.id}🟦 {m.title}" for m in materials)
+        keyboard = await create_material_buttons(session, materials, batch_num)
+
+        await message.answer(text, reply_markup=keyboard)
+
+    except Exception as e:
+        logger.error(f"Error getting materials: {e}")
+        await message.answer("Произошла ошибка при загрузке материалов")
 
 
 @user_private_router.callback_query(F.data.startswith('slide_material_'))
 async def slide_material(callback: CallbackQuery, session: AsyncSession) -> None:
-    """Переключает материалы вперед или назад."""
+    """Переключает между пачками материалов"""
     user_id = callback.from_user.id
     action = callback.data.split("_")[2]
-    current_id = cache_current_material.get(user_id, 0)
-    new_id = current_id + 1 if action == 'next' else max(0, current_id - 1)
+    current_batch = cache_current_material.get(user_id, 1)
 
-    async def kb_func(mats, _):
-        next_exists_task = asyncio.create_task(orm_get_material_by_id(session, new_id + 1))
-        prev_exists = new_id > 0
-        next_exists = await next_exists_task
-        builder = InlineKeyboardBuilder()
-        for material in mats:
-            if material.link:
-                builder.button(text=f"Материал №{material.id}", url=material.link)
-            else:
-                builder.button(text=f"Материал №{material.id} (нет ссылки)", callback_data=f"no_link_{material.id}")
-        if prev_exists:
-            builder.button(text="Назад", callback_data="slide_material_back")
-        if next_exists:
-            builder.button(text="Далее", callback_data="slide_material_next")
-        builder.adjust(3, 3, 2)
-        return builder.as_markup()
+    # Определяем новую пачку
+    if action == 'next':
+        new_batch = current_batch + 1
+    else:  # 'back'
+        new_batch = max(1, current_batch - 1)
 
-    await paginate_items(
-        callback, session, user_id, new_id, cache_current_material,
-        orm_get_material_by_id,
-        lambda ms: "\n".join(f"{m.id}🟦 {m.title}" for m in ms),
-        kb_func
+    try:
+        materials = await get_materials_batch(session, new_batch)
+
+        if not materials:
+            await callback.answer("Дальше материалов нет" if action == 'next' else "Это первая пачка")
+            return
+
+        cache_current_material[user_id] = new_batch
+
+        text = "\n".join(f"{m.id}🟦 {m.title}" for m in materials)
+        keyboard = await create_material_buttons(session, materials, new_batch)
+
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Error sliding materials: {e}")
+        await callback.answer("Произошла ошибка при загрузке")
+
+
+async def create_material_buttons(
+        session: AsyncSession,
+        materials: List[Material],
+        current_batch: int
+) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для пачки материалов"""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+
+    # Кнопки для материалов
+    for material in materials:
+        if material.link:
+            builder.button(text=f"Материал №{material.id}", url=material.link)
+        else:
+            builder.button(
+                text=f"Материал №{material.id} (нет ссылки)",
+                callback_data=f"no_link_{material.id}"
+            )
+
+    # Проверяем наличие следующей пачки
+    next_batch_exists = len(await get_materials_batch(session, current_batch + 1)) > 0
+    prev_batch_exists = current_batch > 1
+
+    # Кнопки навигации
+    if prev_batch_exists:
+        builder.button(text="◀ Назад", callback_data="slide_material_back")
+
+    builder.button(text=f"Страница {current_batch}", callback_data="current_page")
+
+    if next_batch_exists:
+        builder.button(text="▶ Далее", callback_data="slide_material_next")
+
+    builder.adjust(1, repeat=True)  # По одной кнопке в ряд для материалов
+    if prev_batch_exists or next_batch_exists:
+        builder.adjust(2 if (prev_batch_exists != next_batch_exists) else 3)  # Выравниваем кнопки навигации
+
+    return builder.as_markup()
+
+@user_private_router.message(F.text.lower() == 'отправить|изменить работу')
+async def change_work_link(message: Message, state: FSMContext):
+    await state.set_state(EditWorkLink.waiting_link)
+    await message.answer("Обновление ссылка на работу.", reply_markup=ReplyKeyboardRemove())
+    inline_markup = get_callback_btns(btns={"Отменить❌": "cancel_change_link"})
+    await message.answer(
+        "🔗 Введите новую ссылку на работу вашей команды:\n"
+        "(URL должен начинаться с http:// или https://)\n\n",
+        reply_markup=inline_markup
     )
 
+@user_private_router.callback_query(EditWorkLink.waiting_link, F.data == "cancel_change_link")
+async def cancel_change_work_link(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Обновление отменено.", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
 
-    # user_id = callback.from_user.id
-    # action = callback.data.split('_')[2]  # Определяем действие (next или back)
-    # current_category_id = cache_current_material.get(user_id, 1)
-    #
-    # if action == 'next':
-    #     current_category_id += 1
-    # elif action == 'back':
-    #     current_category_id = max(0, current_category_id - 1)  # Не опускаемся ниже первой категории
-    #
-    # cache_current_theme[user_id] = current_category_id
-    # materials = await orm_get_material_by_id(session=session, material_id=current_category_id)
-    #
-    # if materials:
-    #     # Проверяем, есть ли следующая категория
-    #     next_materials_exists = await orm_get_material_by_id(session=session, material_id=current_category_id + 1)
-    #     # Проверяем, есть ли предыдущая категория
-    #     prev_materials_exists = await orm_get_material_by_id(session=session, material_id=current_category_id - 1)
-    #
-    #     # Создаем кнопки для тем
-    #
-    #     btns = {f'Материал №{material.id}': f'choice_material_{material.id}' for material in materials}
-    #
-    #
-    #     # Добавляем кнопку "Назад", если это не первая категория
-    #     if prev_materials_exists:
-    #         btns.update({"Назад": "slide_material_back"})
-    #
-    #     # Добавляем кнопку "Далее", если это не последняя категория
-    #     if next_materials_exists:
-    #         btns.update({"Далее": "slide_material_next"})
-    #
-    #     # Создаем клавиатуру
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     # Формируем текст с информацией о темах
-    #     result_answer = ""
-    #     for material in materials:
-    #         result_answer += f'{material.id}🟦 {material.title}\n'
-    #
-    #     await callback.message.edit_text(f"Вывожу список материалов.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await callback.answer("Материалы пока отсутствуют")
+@user_private_router.message(EditWorkLink.waiting_link, F.text)
+async def procces_new_link(message: Message, state: FSMContext, session: AsyncSession):
+    new_link = message.text.strip()
+    success = await update_team_work_link(session, message.chat.id, new_link)
 
+    if success:
+        await message.answer("✅ Ссылка на работу успешно обновлена!", reply_markup=menu_kb)
+        await state.set_state(User_MainStates.after_registration)
+        team_info = await get_team_info_by_chat_id(session, message.chat.id)
 
-
-
+        if team_info:
+            await message.answer(
+                f"<b>Информация о вас</b>\n\n"
+                f"🔹 Ваш ID участника: пусто\n"
+                f"🔹 Название вашей школы: пусто\n"
+                f"🏆 <b>Информация о вашей команде</b>\n\n"
+                f"🔹 Название команды: {team_info['team_name']}\n"
+                f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+                f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+                f"🔹 Участников: {team_info['participants_count']}"
+            )
+        else:
+            await message.answer(
+                "❌ Не удалось обновить ссылку. Проверьте формат ссылки "
+                "(она должна начинаться с http:// или https://) или "
+                "обратитесь к организаторам, если проблема сохраняется.",
+                reply_markup=menu_kb
+            )
+            await state.set_state(User_MainStates.after_registration)
 
 # Обработчик для команды "выбрать тему"
-@user_private_router.message(F.text.lower() == 'посмотреть темы')
-async def get_theme(message: Message, session: AsyncSession, state: FSMContext) -> None:
+@user_private_router.message(F.text.lower() == 'выбрать тему')
+async def get_theme(message: Message, session: AsyncSession) -> None:
     """Показывает список тем."""
     user_id = message.from_user.id
     await paginate_items(
@@ -228,31 +237,12 @@ async def get_theme(message: Message, session: AsyncSession, state: FSMContext) 
             f"{t.id}🟦 {t.title}\n📌Прием: {t.technique}" for t in ts),
         lambda ts, _: get_callback_btns(
             btns=({f"Тема №{t.id}": f"choice_theme_{t.id}" for t in ts} if settings.prod else {}) | {
-                "Далее": "slide_theme_next"},
-            sizes=(3, 3, 2)
+                "Далее": "slide_theme_next",
+                "Своя тема": "custom_theme"},  # Добавлена кнопка "Своя тема"
+            sizes=(3, 3, 1, 1)  # Обновлены размеры для новой кнопки
         )
     )
 
-    # user_id = message.from_user.id
-    # cache_current_theme[user_id] = 1  # Устанавливаем начальную тему
-    # themes = await orm_get_all_themes_by_category_id(session=session, category_id=1)
-    #
-    # if themes:
-    #     if settings.prod:
-    #         btns = {f'Тема №{theme.id}': f'choice_theme_{theme.id}' for theme in themes}
-    #     else:
-    #         btns = {}
-    #     btns.update({"Далее": "slide_theme_next"})
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     result_answer = f"Категория: {themes[0].category.title}\n\n"
-    #     for theme in themes:
-    #         result_answer += (f'{theme.id}🟦 {theme.title}\n'
-    #                          f'📌Прием: {theme.technique}\n\n')
-    #
-    #     await message.answer(f"Вывожу список тем.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await message.answer("Темы пока отсутствуют")
 
 # Обработчик для переключения между темами
 @user_private_router.callback_query(F.data.startswith('slide_theme_'))
@@ -271,6 +261,7 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession) -> None:
             btns["Назад"] = "slide_theme_back"
         if next_exists:
             btns["Далее"] = "slide_theme_next"
+        btns['Своя тема'] = "custom_theme"
         return get_callback_btns(btns=btns, sizes=(3, 3, 2))
 
     await paginate_items(
@@ -278,53 +269,8 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession) -> None:
         orm_get_all_themes_by_category_id,
         lambda ts: f"Категория: {ts[0].category.title}\n\n" + "\n".join(
             f"{t.id}🟦 {t.title}\n📌Прием: {t.technique}" for t in ts),
-        kb_func
-    )
-    # user_id = callback.from_user.id
-    # action = callback.data.split('_')[2]  # Определяем действие (next или back)
-    # current_category_id = cache_current_theme.get(user_id, 1)
-    #
-    # if action == 'next':
-    #     current_category_id += 1
-    # elif action == 'back':
-    #     current_category_id = max(1, current_category_id - 1)  # Не опускаемся ниже первой категории
-    #
-    # cache_current_theme[user_id] = current_category_id
-    # themes = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id)
-    #
-    # if themes:
-    #     # Проверяем, есть ли следующая категория
-    #     next_category_exists = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id + 1)
-    #     # Проверяем, есть ли предыдущая категория
-    #     prev_category_exists = await orm_get_all_themes_by_category_id(session=session, category_id=current_category_id - 1)
-    #
-    #     # Создаем кнопки для тем
-    #     if settings.prod:
-    #         btns = {f'Тема №{theme.id}': f'choice_theme_{theme.id}' for theme in themes}
-    #     else:
-    #         btns = {}
-    #
-    #     # Добавляем кнопку "Назад", если это не первая категория
-    #     if prev_category_exists:
-    #         btns.update({"Назад": "slide_theme_back"})
-    #
-    #     # Добавляем кнопку "Далее", если это не последняя категория
-    #     if next_category_exists:
-    #         btns.update({"Далее": "slide_theme_next"})
-    #
-    #     # Создаем клавиатуру
-    #     reply_markup = get_callback_btns(btns=btns, sizes=(3, 3, 2))
-    #
-    #     # Формируем текст с информацией о темах
-    #     result_answer = f"Категория: {themes[0].category.title}\n\n"
-    #     for theme in themes:
-    #         result_answer += (f'{theme.id}🟦 {theme.title}'
-    #                          f'📌Прием: {theme.technique}\n\n')
-    #
-    #     # Редактируем сообщение с новыми данными
-    #     await callback.message.edit_text(f"Вывожу список тем.\n\n{result_answer}", reply_markup=reply_markup)
-    # else:
-    #     await callback.answer("Темы в этой категории отсутствуют")
+        kb_func)
+
 
 @user_private_router.callback_query(F.data.startswith('choice_theme_'))
 async def choice_theme(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
@@ -338,117 +284,199 @@ async def choice_theme(callback: CallbackQuery, session: AsyncSession, state: FS
             btns={"Подверждаю✅": f"confirm_theme_{theme_id}", "Я передумал❌": "confirm_theme_"})
     )
 
-    # theme_id = int(callback.data.split('_')[2])
-    # current_theme = await orm_get_theme_by_id(session=session, theme_id=theme_id)
-    #
-    # await state.update_data(prev_message_id=callback.message.message_id)
-    #
-    # reply_markup = get_callback_btns(
-    #     btns={
-    #         "Подверждаю✅": f"confirm_theme_{theme_id}",
-    #         "Я передумал❌": "confirm_theme_"
-    #     }
-    # )
-    #
-    # await callback.message.answer(text=f"Вы выбираете тему:\n\n"
-    #                                    f"🟦 {current_theme.title}\n"
-    #                                    f"📌Прием: {current_theme.technique}\n\n"
-    #                                    f"Подтверждаете выбор?",reply_markup=reply_markup)
+@user_private_router.callback_query(F.data.startswith('custom_theme'))
+async def choice_custom_theme(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddNewTheme.waiting_title)
+
+
+    inline_markup = get_callback_btns(btns={"Отменить❌": "cancel_change_custom_theme"})
+    await callback.message.answer("🔹 Вы выбрали создание своей темы.", reply_markup=del_kbd)
+    await callback.message.answer(
+        "Введите название вашей темы (до 100 символов):",
+        reply_markup=inline_markup
+    )
+    await state.update_data(prev_message_id=callback.message.message_id+2)
+    await callback.answer()
+
+@user_private_router.message(AddNewTheme.waiting_title, F.text)
+async def add_title_for_newtheme(message: Message, state:FSMContext):
+    if len(message.text) > 100:
+        await message.answer("Название слишком длинное (максимум 100 символов). Попробуйте снова:",
+                             reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"}))
+        return
+    data = await state.get_data()
+    prev_message_id = data.get("prev_message_id")
+    await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id, reply_markup=None)
+    await state.update_data(title=message.text)
+    await state.set_state(AddNewTheme.waiting_techiquae)
+    await message.answer("Теперь введите прием, который вы будете использовать (до 100 символов):",
+        reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"})
+    )
+    await state.update_data(prev_message_id=message.message_id+1)
+
+@user_private_router.message(AddNewTheme.waiting_techiquae, F.text)
+async def add_techiquae_for_newtheme(message: Message, state:FSMContext, session: AsyncSession):
+    if len(message.text) > 100:
+        await message.answer("Описание приема слишком длинное (максимум 100 символов). Попробуйте снова:",
+                             reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_custom_theme"})
+                             )
+        return
+    data = await state.get_data()
+    title = data.get("title", '')
+    technique = message.text
+
+    new_theme = await orm_create_theme(
+        session=session,
+        title=title,
+        technique=technique,
+        category_id=6
+    )
+    data = await state.get_data()
+    prev_message_id = data.get("prev_message_id")
+    if not new_theme:
+
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer("❌ Не удалось создать тему. Пожалуйста, попробуйте позже.",
+            reply_markup=menu_kb
+        )
+        await state.set_state(User_MainStates.after_registration)
+        return
+
+    chat_id = message.chat.id
+    success = await update_team_work_theme(
+        session,
+        chat_id,
+        f"{title} {technique}"
+    )
+
+    if success:
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer(
+            f"✅ Ваша тема успешно создана и сохранена!\n\n"
+            f"🏷 Название: {title}\n"
+            f"🛠 Технология: {technique}",
+            reply_markup=menu_kb
+        )
+    else:
+        await message.bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=prev_message_id,
+                                                    reply_markup=None)
+        await message.answer(
+            "❌ Тема создана, но не привязана к команде. Обратитесь к организаторам.",
+            reply_markup=menu_kb
+        )
+
+    await state.set_state(User_MainStates.after_registration)
+
+@user_private_router.callback_query(F.data == "cancel_change_custom_theme")
+async def cancel_change_custom_theme(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(User_MainStates.after_registration)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Cоздание новой темы отменено.", reply_markup=menu_kb)
+    await callback.answer()
+
+@user_private_router.callback_query(EditWorkLink.waiting_link, F.data == "cancel_change_link")
+async def cancel_change_work_link(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Обновление отменено.", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
 
 @user_private_router.callback_query(F.data.startswith("confirm_theme_"))
 async def confirm_theme(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """Подтверждение или отмена выбора темы."""
     confirm_theme_id = callback.data.split("_")[2]
     if confirm_theme_id:
-        user_id = callback.from_user.id
+        chat_id = callback.message.chat.id
         theme = await orm_get_theme_by_id(session, int(confirm_theme_id))
-        await orm_Edit_user_profile(session, user_id, {'edit_theme': f"{theme.title} {theme.technique}"})
+        await update_team_work_theme(
+        session,
+        chat_id,
+            f"{theme.title} {theme.technique}"
+    )
         state_data = await state.get_data()
         await callback.bot.delete_messages(callback.message.chat.id,
                                            [callback.message.message_id, state_data.get("prev_message_id")])
         await callback.message.answer("Тема успешно выбрана📥")
+        team_info = await get_team_info_by_chat_id(session, chat_id)
+        if team_info:
+            await callback.message.answer(
+                f"🏆 <b>Информация о вашей команде</b>\n\n"
+                f"🔹 Название команды: {team_info['team_name']}\n"
+                f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+                f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+                f"🔹 Участников: {team_info['participants_count']}"
+            )
     else:
         await callback.message.delete()
 
-    # confirm_theme_id = callback.data.split("_")[2]
-    # if confirm_theme_id:
-    #     user_id = callback.from_user.id
-    #     current_theme = await orm_get_theme_by_id(session=session, theme_id=int(confirm_theme_id))
-    #     data = {'edit_theme': f'{current_theme.title} {current_theme.technique}'}
-    #     await orm_Edit_user_profile(session=session, user_id=user_id, data=data)
-    #
-    #     message_ids_to_delete = []
-    #     state_data = await state.get_data()
-    #     prev_message_id = state_data.get("prev_message_id")
-    #
-    #     # Добавляем текущее сообщение в список для удаления
-    #     message_ids_to_delete.append(callback.message.message_id)
-    #     message_ids_to_delete.append(prev_message_id)
-    #
-    #     await callback.bot.delete_messages(callback.message.chat.id, message_ids_to_delete)
-    #
-    #
-    #     await callback.message.answer("Тема успешна выбрана📥")
-    # else:
-    #     await callback.message.delete()
 
 # Обработчик для команды "мой профиль"
 @user_private_router.message(User_MainStates.after_registration, F.text.lower() == 'мой профиль')
 async def get_user_profile(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Показывает профиль пользователя."""
-    data = await orm_Get_info_user(session, message.from_user.id)
-    if data:
-        await state.set_state(User_MainStates.user_view_profile)
-        text = (f"📄ФИО: {data.name}\n🏫Школа: {data.school}\n📱Номер телефона: {data.phone_number}\n"
-                f"📧Электронная почта: {data.mail}\n👨‍🏫ФИО наставника: {data.name_mentor}\n"
-                f"👪Должность наставника: {data.post_mentor or ''}\n📜Тема: {data.theme}")
-        await message.answer("Открываю Ваш профиль")
-        await message.answer(text, reply_markup=get_keyboard("Редактировать", "Назад", placeholder="Выберите действие",
-                                                             sizes=(2,)))
-    else:
-        await message.answer("Профиль не найден")
+    """
+       Обработчик команды /my_team - показывает информацию о команде пользователя
+       """
+    # Получаем chat_id из сообщения
+    chat_id = message.chat.id
 
-    # await state.set_state(User_MainStates.user_view_profile)
-    # data = await orm_Get_info_user(session, message.from_user.id)
-    # if data:
-    #     result_answer = (f"📄ФИО: {data.name}\n"
-    #                     f"🏫Школа: {data.school}\n"
-    #                     f"📱Номер телефона: {data.phone_number}\n"
-    #                     f"📧Электронная почта: {data.mail}\n"
-    #                     f"👨‍🏫ФИО наставника: {data.name_mentor}\n"
-    #                     f"👪Должность наставника: {data.post_mentor if data.post_mentor else ''}\n"
-    #                     f"📜Тема: {data.theme}")
-    #
-    #     reply_markup = get_keyboard(
-    #         "Редактировать",
-    #         "Назад",
-    #         placeholder="Выберите действие",
-    #         sizes=(2,),
-    #     )
-    #     await message.answer("Открываю Ваш профиль")
-    #     await message.answer(result_answer, reply_markup=reply_markup)
-    # else:
-    #     await message.answer("Профиль не найден")
+    # Получаем информацию о команде
+    team_info = await get_team_info_by_chat_id(session, chat_id)
+    user_info = await get_verified_user_by_chat_id(session, chat_id)
+    participant_id = user_info.participant_id
+    participant_info = await get_participant_by_id(session, participant_id)
 
 
 
+    if not team_info:
+        return await message.answer(
+            "❌ Вы не состоите ни в одной команде или не завершили верификацию.\n\n"
+            "Используйте /start для начала верификации."
+        )
+
+    # Формируем ответ
+    response = (
+        f"👫 <b>Информация о вас</b>\n\n"
+        f"🔹 Ваш ID участника: {user_info.participant_id}\n"
+        f"🔹 Название вашей школы: {participant_info.school}\n\n"
+        f"🏆 <b>Информация о вашей команде</b>\n\n"
+        f"🔹 Название команды: {team_info['team_name']}\n"
+        f"🔹 Тема работы: {team_info['work_theme'] or 'не указана'}\n"
+        f"🔹 Ссылка на работу: {team_info['work_link'] or 'не указана'}\n"
+        f"🔹 Участников: {team_info['participants_count']}"
+    )
+
+    await message.answer(response, reply_markup=get_callback_btns(btns={"Изменить название школы📝": "edit_school"}))
 
 
+@user_private_router.callback_query(User_MainStates.after_registration, F.data == "edit_school")
+async def choice_edit_school(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Вы редактируете название школы.", reply_markup=del_kbd)
+    await callback.message.answer("Введите полное название школы (не больше 200 символов).",
+                                  reply_markup=get_callback_btns(btns={"Отменить❌": "cancel_edit_school"})
+                                  )
+    await state.set_state(EditProfile.waiting_new_school)
 
-# @user_private_router.message(Command('admin'))
-# async def admin(message: Message, session: AsyncSession, state: FSMContext):
-#     list_admins = list(await orm_get_list_admin(session=session))
-#     print(list_admins)
-#     if message.from_user.username == settings.USER_ADMIN_NICK or message.from_user.id in list_admins:
-#         reply_markup = admin_kb
-#         if message.from_user.id not in list_admins:
-#             await orm_add_admin(session=session, user_id=message.from_user.id, username=message.from_user.username)
-#         if message.from_user.username == settings.USER_ADMIN_NICK:
-#             reply_markup = admin_kb
-#             reply_markup.keyboard[1].append(KeyboardButton(text="Добавить админа"))
-#         await message.answer(text="Вы вошли как админ", reply_markup=reply_markup)
-#         await state.set_state(Admin_MainStates.choice_action)
-#     else:
-#         await message.answer(text="У вас недостаточно прав")
+@user_private_router.callback_query(EditProfile.waiting_new_school, F.data == "cancel_edit_school")
+async def cancel_edit_school(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Изменение школы отменено❌", reply_markup=menu_kb)
+    await state.set_state(User_MainStates.after_registration)
 
+@user_private_router.message(EditProfile.waiting_new_school, F.text)
+async def edit_school(message: Message, session: AsyncSession, state: FSMContext):
+    if len(message.text) > 200:
+        await message.answer("Название школы не должно превышать 200 символов.")
+        return False
 
+    try:
+        chat_id = message.chat.id
+        user_info = await get_verified_user_by_chat_id(session, chat_id)
+        participant_id = user_info.participant_id
+        await set_new_school_for_participants(session, participant_id, message.text)
+        await message.answer("Название школы успешно обновлено", reply_markup=menu_kb)
+        await state.set_state(User_MainStates.after_registration)
+    except Exception as e:
+        await message.answer("При изменении школы произошла ошибка. Пожалуйста попробуйте позже")
+        logger.error(f"Error edit school: {e}")
+        await state.set_state(User_MainStates.after_registration)

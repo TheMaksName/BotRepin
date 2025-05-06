@@ -6,11 +6,11 @@ from app.database.models import Base
 
 
 engine = create_async_engine(
-    settings.db_lite,
+    settings.database_url,
     pool_size=20,  # Максимальное количество соединений в пуле
     max_overflow=10,  # Дополнительные соединения при переполнении
     pool_timeout=30,  # Тайм-аут ожидания соединения (в секундах)
-    pool_pre_ping=True,  # Проверка соединения перед использованием
+    pool_pre_ping=False,  # Проверка соединения перед использованием
     echo=False,  # Отключение логирования SQL-запросов
     query_cache_size = 500
 )

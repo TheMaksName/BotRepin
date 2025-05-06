@@ -32,7 +32,10 @@ menu_kb = ReplyKeyboardMarkup (
             KeyboardButton(text="Материалы"),
         ],
         [
-            KeyboardButton(text="Посмотреть темы"),
+            KeyboardButton(text="Выбрать тему"),
+            KeyboardButton(text="Отправить|Изменить работу")
+        ],
+        [
             KeyboardButton(text="Мой профиль")
         ]
     ],
